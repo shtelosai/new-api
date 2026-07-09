@@ -334,36 +334,50 @@ function ModelStatusesCell({ channel }: { channel: Channel }) {
 
   // 一个模型一个圆点，颜色表状态：绿=正常 / 红=已禁用 / 灰=未知；hover 显示模型名+状态+来源+原因
   return (
-    <div
-      className='flex flex-wrap items-center gap-1.5'
-      onClick={(e) => e.stopPropagation()}
-    >
-      {statuses.map((status) => {
-        const config = getModelStatusBadgeConfig(status.status)
-        const dotColor =
-          status.status === 'healthy'
-            ? 'bg-emerald-500'
-            : status.status === 'disabled'
-              ? 'bg-red-500'
-              : 'bg-muted-foreground'
-        const titleParts = [`${status.model} — ${t(config.labelKey)}`]
-        if (status.source) {
-          titleParts.push(`${t('Source')}: ${status.source}`)
-        }
-        if (status.reason) {
-          titleParts.push(`${t('Disable Reason')}: ${status.reason}`)
-        }
-        const title = titleParts.join('\n')
-        return (
-          <span
-            key={status.model}
-            className={`inline-block size-2.5 shrink-0 rounded-full ${dotColor}`}
-            title={title}
-            aria-label={titleParts.join(', ')}
-          />
-        )
-      })}
-    </div>
+    <TooltipProvider>
+      <div
+        className='flex flex-wrap items-center gap-1.5'
+        onClick={(e) => e.stopPropagation()}
+      >
+        {statuses.map((status) => {
+          const config = getModelStatusBadgeConfig(status.status)
+          const dotColor =
+            status.status === 'healthy'
+              ? 'bg-emerald-500'
+              : status.status === 'disabled'
+                ? 'bg-red-500'
+                : 'bg-muted-foreground'
+          return (
+            <Tooltip key={status.model}>
+              <TooltipTrigger
+                render={
+                  <span
+                    className={`inline-block size-2.5 shrink-0 cursor-help rounded-full ${dotColor}`}
+                    aria-label={`${status.model} — ${t(config.labelKey)}`}
+                  />
+                }
+              />
+              <TooltipContent side='top'>
+                <div className='space-y-0.5'>
+                  <div className='font-mono font-medium'>{status.model}</div>
+                  <div>{t(config.labelKey)}</div>
+                  {status.source && (
+                    <div>
+                      {t('Source')}: {status.source}
+                    </div>
+                  )}
+                  {status.reason && (
+                    <div className='break-words'>
+                      {t('Disable Reason')}: {status.reason}
+                    </div>
+                  )}
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          )
+        })}
+      </div>
+    </TooltipProvider>
   )
 }
 
