@@ -41,11 +41,6 @@ import { TruncatedText } from '@/components/truncated-text'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -337,73 +332,38 @@ function ModelStatusesCell({ channel }: { channel: Channel }) {
     return <span className='text-muted-foreground text-xs'>-</span>
   }
 
-  const healthyCount = statuses.filter(
-    (status) => status.status === 'healthy'
-  ).length
-  const allHealthy = healthyCount === statuses.length
-  const summary = `${healthyCount}/${statuses.length}`
-
+  // 一个模型一个圆点，颜色表状态：绿=正常 / 红=已禁用 / 灰=未知；hover 显示模型名+状态+来源+原因
   return (
-    <Popover>
-      <PopoverTrigger
-        render={
-          <button
-            type='button'
-            className='inline-flex border-0 bg-transparent p-0'
-            aria-label={t('Model Status')}
-            onClick={(e) => e.stopPropagation()}
-          />
+    <div
+      className='flex flex-wrap items-center gap-1.5'
+      onClick={(e) => e.stopPropagation()}
+    >
+      {statuses.map((status) => {
+        const config = getModelStatusBadgeConfig(status.status)
+        const dotColor =
+          status.status === 'healthy'
+            ? 'bg-emerald-500'
+            : status.status === 'disabled'
+              ? 'bg-red-500'
+              : 'bg-muted-foreground'
+        const titleParts = [`${status.model} — ${t(config.labelKey)}`]
+        if (status.source) {
+          titleParts.push(`${t('Source')}: ${status.source}`)
         }
-      >
-        <StatusBadge
-          label={summary}
-          variant={allHealthy ? 'success' : 'danger'}
-          size='sm'
-          copyable={false}
-          className='-ml-1.5 cursor-pointer'
-        />
-      </PopoverTrigger>
-      <PopoverContent side='top' align='start' className='w-80 text-xs'>
-        <div className='flex flex-col gap-2'>
-          <p className='font-medium'>{t('Model Status')}</p>
-          <div className='max-h-72 space-y-2 overflow-y-auto pr-1'>
-            {statuses.map((status) => {
-              const config = getModelStatusBadgeConfig(status.status)
-              return (
-                <div key={status.model} className='min-w-0 space-y-1'>
-                  <div className='flex min-w-0 items-center justify-between gap-2'>
-                    <span className='min-w-0 truncate font-mono'>
-                      {status.model}
-                    </span>
-                    <StatusBadge
-                      label={t(config.labelKey)}
-                      variant={config.variant}
-                      size='sm'
-                      copyable={false}
-                      className='shrink-0'
-                    />
-                  </div>
-                  {(status.source || status.reason) && (
-                    <div className='text-muted-foreground space-y-0.5 pl-0.5'>
-                      {status.source && (
-                        <div>
-                          {t('Source')}: {status.source}
-                        </div>
-                      )}
-                      {status.reason && (
-                        <div className='break-words'>
-                          {t('Disable Reason')}: {status.reason}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
+        if (status.reason) {
+          titleParts.push(`${t('Disable Reason')}: ${status.reason}`)
+        }
+        const title = titleParts.join('\n')
+        return (
+          <span
+            key={status.model}
+            className={`inline-block size-2.5 shrink-0 rounded-full ${dotColor}`}
+            title={title}
+            aria-label={titleParts.join(', ')}
+          />
+        )
+      })}
+    </div>
   )
 }
 
