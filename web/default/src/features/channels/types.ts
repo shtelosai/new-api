@@ -43,6 +43,7 @@ export const channelSchema = z.object({
   status: z.number(), // 1: enabled, 0: manual disabled, 2: auto disabled
   name: z.string(),
   weight: z.number().nullish(),
+  ratio: z.number().nullish(),
   created_time: z.number(),
   test_time: z.number(),
   response_time: z.number(), // in milliseconds
@@ -70,6 +71,16 @@ export const channelSchema = z.object({
     multi_key_polling_index: 0,
     multi_key_mode: 'random',
   }),
+  model_statuses: z
+    .array(
+      z.object({
+        model: z.string(),
+        status: z.enum(['healthy', 'disabled', 'unknown']),
+        source: z.string().optional(),
+        reason: z.string().optional(),
+      })
+    )
+    .optional(),
   settings: z.string().default('{}'), // other_settings JSON
 })
 

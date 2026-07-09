@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
@@ -45,6 +46,10 @@ func TestMain(m *testing.M) {
 		&model.Token{},
 		&model.Log{},
 		&model.Channel{},
+		&model.Ability{},
+		&model.TokenModelChannel{},
+		&model.ChannelModelDisabled{},
+		&model.ChannelModelHealth{},
 		&model.TopUp{},
 		&model.UserSubscription{},
 		&model.SystemTask{},
@@ -236,6 +241,71 @@ func TestTaskBillingContextPriceDataFiltersMultiplier(t *testing.T) {
 		"size":     3,
 		"identity": 1,
 	}, priceData.OtherRatios())
+}
+
+func TestTaskBillingOtherIncludesChannelRatioWhenBillable(t *testing.T) {
+	task := makeTask(1, 1, 100, 0, BillingSourceWallet, 0)
+	channelRatio := 1.5
+	task.PrivateData.BillingContext.ChannelRatio = &channelRatio
+
+	other := taskBillingOther(task)
+
+	assert.Equal(t, 1.5, other["channel_ratio"])
+}
+
+func TestRecalculateByTokensAppliesChannelRatio(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 21, 21, 21
+	const initQuota, preConsumed = 20000000, 1
+	const tokenRemain = 20000000
+	const totalTokens = 100000
+	const channelRatio = 1.5
+	const modelName = "channel-ratio-test-model"
+	const modelRatio = 2.0
+	const groupName = "channel-ratio-test-group"
+	const groupRatio = 3.0
+
+	seedUser(t, userID, initQuota)
+	seedToken(t, tokenID, userID, "sk-recalc-channel", tokenRemain)
+	seedChannel(t, channelID)
+
+	originModelRatiosJSON, err := common.Marshal(ratio_setting.GetModelRatioCopy())
+	require.NoError(t, err)
+	originGroupRatiosJSON, err := common.Marshal(ratio_setting.GetGroupRatioCopy())
+	require.NoError(t, err)
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"channel-ratio-test-model":2}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"channel-ratio-test-group":3}`))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(string(originModelRatiosJSON)))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(string(originGroupRatiosJSON)))
+	})
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.Group = groupName
+	task.Properties.OriginModelName = modelName
+	task.PrivateData.BillingContext.OriginModelName = modelName
+	channelRatioValue := channelRatio
+	task.PrivateData.BillingContext.ChannelRatio = &channelRatioValue
+
+	expectedActualQuota := int(float64(totalTokens) * modelRatio * groupRatio * channelRatio)
+	require.Greater(t, expectedActualQuota, preConsumed)
+
+	RecalculateTaskQuotaByTokens(ctx, task, totalTokens)
+
+	assert.Equal(t, expectedActualQuota, task.Quota)
+	assert.Equal(t, initQuota-(expectedActualQuota-preConsumed), getUserQuota(t, userID))
+	assert.Equal(t, tokenRemain-(expectedActualQuota-preConsumed), getTokenRemainQuota(t, tokenID))
+
+	log := getLastLog(t)
+	require.NotNil(t, log)
+	assert.Equal(t, model.LogTypeConsume, log.Type)
+	assert.Equal(t, expectedActualQuota-preConsumed, log.Quota)
+
+	var other map[string]interface{}
+	require.NoError(t, common.Unmarshal([]byte(log.Other), &other))
+	assert.Equal(t, channelRatio, other["channel_ratio"])
 }
 
 // ---------------------------------------------------------------------------

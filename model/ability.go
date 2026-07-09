@@ -63,9 +63,10 @@ func GetAllEnableAbilities() []Ability {
 func getPriority(group string, model string, retry int) (int, error) {
 
 	var priorities []int
-	err := DB.Model(&Ability{}).
+	priorityQuery := DB.Model(&Ability{}).
 		Select("DISTINCT(priority)").
-		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
+		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	err := excludeDisabledChannelModels(priorityQuery).
 		Order("priority DESC").              // 按优先级降序排序
 		Pluck("priority", &priorities).Error // Pluck用于将查询的结果直接扫描到一个切片中
 
@@ -90,15 +91,21 @@ func getPriority(group string, model string, retry int) (int, error) {
 	return priorityToUse, nil
 }
 
+func excludeDisabledChannelModels(query *gorm.DB) *gorm.DB {
+	return query.Where(
+		"NOT EXISTS (SELECT 1 FROM channel_model_disabled cmd WHERE cmd.channel_id = abilities.channel_id AND cmd.model = abilities.model)",
+	)
+}
+
 func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
-	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
-	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
+	maxPrioritySubQuery := excludeDisabledChannelModels(DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true))
+	channelQuery := excludeDisabledChannelModels(DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery))
 	if retry != 0 {
 		priority, err := getPriority(group, model, retry)
 		if err != nil {
 			return nil, err
 		} else {
-			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+			channelQuery = excludeDisabledChannelModels(DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority))
 		}
 	}
 
@@ -383,6 +390,17 @@ func FixAbility() (int, int, error) {
 			} else {
 				successCount++
 			}
+		}
+	}
+	// 清理 channel_model_disabled / channel_model_health 中已不属于渠道 models 的孤儿记录。
+	// 渠道编辑路径已有同步钩子；这里兜底 FixAbility 全量场景。
+	for _, channel := range channels {
+		newModels := channel.GetModels()
+		if cleanupErr := DeleteChannelModelDisabledNotInModels(channel.Id, newModels); cleanupErr != nil {
+			common.SysLog(fmt.Sprintf("FixAbility cleanup channel_model_disabled failed: channel_id=%d, error=%v", channel.Id, cleanupErr))
+		}
+		if cleanupErr := DeleteHealthByChannelNotInModels(channel.Id, newModels); cleanupErr != nil {
+			common.SysLog(fmt.Sprintf("FixAbility cleanup channel_model_health failed: channel_id=%d, error=%v", channel.Id, cleanupErr))
 		}
 	}
 	InitChannelCache()

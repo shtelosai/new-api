@@ -168,6 +168,11 @@ func GetAllChannels(c *gin.Context) {
 	for _, datum := range channelData {
 		clearChannelInfo(datum)
 	}
+	if err := model.AttachChannelModelStatuses(channelData); err != nil {
+		common.SysError("failed to attach channel model statuses: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取渠道模型状态失败，请稍后重试"})
+		return
+	}
 
 	countQuery := buildChannelListQuery(groupFilter, statusFilter, -1)
 	var results []struct {
@@ -373,6 +378,11 @@ func SearchChannels(c *gin.Context) {
 
 	for _, datum := range pagedData {
 		clearChannelInfo(datum)
+	}
+	if err := model.AttachChannelModelStatuses(pagedData); err != nil {
+		common.SysError("failed to attach channel model statuses: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取渠道模型状态失败，请稍后重试"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{

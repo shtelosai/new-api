@@ -100,6 +100,7 @@ func main() {
 		}()
 
 		go model.SyncChannelCache(common.SyncFrequency)
+		model.InitTokenModelChannelCache()
 	}
 
 	// 热更新配置

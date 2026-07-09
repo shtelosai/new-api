@@ -281,6 +281,17 @@ function buildTypeDetailSegments(
     }
   }
 
+  if (
+    other.channel_ratio != null &&
+    other.channel_ratio !== 1 &&
+    Number.isFinite(other.channel_ratio)
+  ) {
+    segments.push({
+      text: `${t('Channel Ratio')} ${formatRatioCompact(other.channel_ratio)}x`,
+      muted: true,
+    })
+  }
+
   if (other.is_system_prompt_overwritten) {
     segments.push({
       text: t('System Prompt Override'),

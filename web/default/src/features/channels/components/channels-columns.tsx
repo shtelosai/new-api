@@ -41,6 +41,11 @@ import { TruncatedText } from '@/components/truncated-text'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -281,6 +286,124 @@ function WeightCell({ channel }: { channel: Channel }) {
       }}
       min={0}
     />
+  )
+}
+
+/**
+ * Channel ratio cell component with inline editing
+ */
+function RatioCell({ channel }: { channel: Channel }) {
+  const queryClient = useQueryClient()
+  const isTagRow = isTagAggregateRow(channel)
+
+  if (isTagRow) {
+    return <span className='text-muted-foreground text-xs'>-</span>
+  }
+
+  return (
+    <NumericSpinnerInput
+      value={channel.ratio ?? 1}
+      onChange={(value) => {
+        handleUpdateChannelField(channel.id, 'ratio', value, queryClient)
+      }}
+      min={0}
+      max={10}
+      step={0.1}
+    />
+  )
+}
+
+function getModelStatusBadgeConfig(
+  status: NonNullable<Channel['model_statuses']>[number]['status']
+): {
+  labelKey: string
+  variant: StatusBadgeProps['variant']
+} {
+  if (status === 'healthy') {
+    return { labelKey: 'Healthy', variant: 'success' }
+  }
+  if (status === 'disabled') {
+    return { labelKey: 'Model disabled', variant: 'danger' }
+  }
+  return { labelKey: 'Unknown', variant: 'neutral' }
+}
+
+function ModelStatusesCell({ channel }: { channel: Channel }) {
+  const { t } = useTranslation()
+  const isTagRow = isTagAggregateRow(channel)
+  const statuses = channel.model_statuses ?? []
+
+  if (isTagRow || statuses.length === 0) {
+    return <span className='text-muted-foreground text-xs'>-</span>
+  }
+
+  const healthyCount = statuses.filter(
+    (status) => status.status === 'healthy'
+  ).length
+  const allHealthy = healthyCount === statuses.length
+  const summary = `${healthyCount}/${statuses.length}`
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <button
+            type='button'
+            className='inline-flex border-0 bg-transparent p-0'
+            aria-label={t('Model Status')}
+            onClick={(e) => e.stopPropagation()}
+          />
+        }
+      >
+        <StatusBadge
+          label={summary}
+          variant={allHealthy ? 'success' : 'danger'}
+          size='sm'
+          copyable={false}
+          className='-ml-1.5 cursor-pointer'
+        />
+      </PopoverTrigger>
+      <PopoverContent side='top' align='start' className='w-80 text-xs'>
+        <div className='flex flex-col gap-2'>
+          <p className='font-medium'>{t('Model Status')}</p>
+          <div className='max-h-72 space-y-2 overflow-y-auto pr-1'>
+            {statuses.map((status) => {
+              const config = getModelStatusBadgeConfig(status.status)
+              return (
+                <div key={status.model} className='min-w-0 space-y-1'>
+                  <div className='flex min-w-0 items-center justify-between gap-2'>
+                    <span className='min-w-0 truncate font-mono'>
+                      {status.model}
+                    </span>
+                    <StatusBadge
+                      label={t(config.labelKey)}
+                      variant={config.variant}
+                      size='sm'
+                      copyable={false}
+                      className='shrink-0'
+                    />
+                  </div>
+                  {(status.source || status.reason) && (
+                    <div className='text-muted-foreground space-y-0.5 pl-0.5'>
+                      {status.source && (
+                        <div>
+                          {t('Source')}: {status.source}
+                        </div>
+                      )}
+                      {status.reason && (
+                        <div className='break-words'>
+                          {t('Disable Reason')}: {status.reason}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -955,6 +1078,16 @@ export function useChannelsColumns(
         enableSorting: false,
       },
 
+      // Model status column
+      {
+        accessorKey: 'model_statuses',
+        header: t('Model Status'),
+        meta: { mobileHidden: true },
+        cell: ({ row }) => <ModelStatusesCell channel={row.original} />,
+        size: 120,
+        enableSorting: false,
+      },
+
       // Models column
       {
         accessorKey: 'models',
@@ -1054,6 +1187,16 @@ export function useChannelsColumns(
         meta: { mobileHidden: true },
         cell: ({ row }) => <WeightCell channel={row.original} />,
         size: 90,
+        enableSorting: false,
+      },
+
+      // Channel ratio column
+      {
+        accessorKey: 'ratio',
+        header: t('Channel Ratio'),
+        meta: { mobileHidden: true },
+        cell: ({ row }) => <RatioCell channel={row.original} />,
+        size: 120,
         enableSorting: false,
       },
 

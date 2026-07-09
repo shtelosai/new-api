@@ -105,11 +105,7 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 
 	tr, err := billingexpr.ComputeTieredQuotaWithRequest(snap, params, requestInput)
 	if err != nil {
-		quota = relayInfo.FinalPreConsumedQuota
-		if quota <= 0 {
-			quota = snap.EstimatedQuotaAfterGroup
-		}
-		return true, quota, nil
+		return true, snap.EstimatedQuotaAfterGroup, nil
 	}
 
 	// Surface any int32 saturation from settlement onto RelayInfo so the

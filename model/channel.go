@@ -53,7 +53,10 @@ type Channel struct {
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
-	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
+	Ratio         *float64 `json:"ratio" gorm:"default:1"`          // 渠道倍率，计费时叠加在模型倍率和分组倍率之上；0 表示免费渠道
+	OtherSettings string   `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
+
+	ModelStatuses []ChannelModelStatus `json:"model_statuses" gorm:"-"`
 
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
@@ -499,6 +502,13 @@ func (channel *Channel) GetBaseURL() string {
 	return url
 }
 
+func (channel *Channel) GetRatio() float64 {
+	if channel.Ratio == nil || *channel.Ratio < 0 {
+		return 1.0
+	}
+	return *channel.Ratio
+}
+
 func (channel *Channel) GetModelMapping() string {
 	if channel.ModelMapping == nil {
 		return ""
@@ -569,7 +579,17 @@ func (channel *Channel) Update() error {
 	}
 	DB.Model(channel).First(channel, "id = ?", channel.Id)
 	err = channel.UpdateAbilities(nil)
-	return err
+	if err != nil {
+		return err
+	}
+	newModels := channel.GetModels()
+	if cleanupErr := DeleteChannelModelDisabledNotInModels(channel.Id, newModels); cleanupErr != nil {
+		common.SysError(fmt.Sprintf("cleanup channel_model_disabled after channel update failed: channel_id=%d, error=%v", channel.Id, cleanupErr))
+	}
+	if cleanupErr := DeleteHealthByChannelNotInModels(channel.Id, newModels); cleanupErr != nil {
+		common.SysError(fmt.Sprintf("cleanup channel_model_health after channel update failed: channel_id=%d, error=%v", channel.Id, cleanupErr))
+	}
+	return nil
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {
@@ -599,7 +619,16 @@ func (channel *Channel) Delete() error {
 		return err
 	}
 	err = channel.DeleteAbilities()
-	return err
+	if err != nil {
+		return err
+	}
+	if cleanupErr := DeleteChannelModelDisabledByChannel(channel.Id); cleanupErr != nil {
+		common.SysError(fmt.Sprintf("cleanup channel_model_disabled after channel delete failed: channel_id=%d, error=%v", channel.Id, cleanupErr))
+	}
+	if cleanupErr := DeleteHealthByChannel(channel.Id); cleanupErr != nil {
+		common.SysError(fmt.Sprintf("cleanup channel_model_health after channel delete failed: channel_id=%d, error=%v", channel.Id, cleanupErr))
+	}
+	return nil
 }
 
 var channelStatusLock sync.Mutex

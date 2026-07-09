@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -178,6 +179,15 @@ func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error)
 	return db, common.DatabaseTypeSQLite, err
 }
 
+// shouldSkipAutoMigrate 报告是否跳过启动时的 AutoMigrate。
+// 当 schema 已线下手动执行 DDL 应用到位时，设置 SKIP_AUTO_MIGRATE=true，
+// 避免应用在启动时经数据库连接跑 DDL（如 RDS 读写分离端点上的意外 DDL）。
+// 注意：跳过后必须保证库结构与当前代码期望一致，否则运行时查询会因缺列/缺表报错。
+func shouldSkipAutoMigrate() bool {
+	skip, _ := strconv.ParseBool(os.Getenv("SKIP_AUTO_MIGRATE"))
+	return skip
+}
+
 func InitDB() (err error) {
 	db, dbType, err := chooseDB("SQL_DSN", false)
 	if err == nil {
@@ -209,6 +219,10 @@ func InitDB() (err error) {
 		}
 		if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
 			//_, _ = sqlDB.Exec("ALTER TABLE channels MODIFY model_mapping TEXT;") // TODO: delete this line when most users have upgraded
+		}
+		if shouldSkipAutoMigrate() {
+			common.SysLog("database migration skipped (SKIP_AUTO_MIGRATE=true); schema 需线下手动执行 DDL 保证与代码一致")
+			return nil
 		}
 		common.SysLog("database migration started")
 		err = migrateDB()
@@ -251,6 +265,10 @@ func InitLogDB() (err error) {
 		if !common.IsMasterNode {
 			return nil
 		}
+		if shouldSkipAutoMigrate() {
+			common.SysLog("log database migration skipped (SKIP_AUTO_MIGRATE=true)")
+			return nil
+		}
 		common.SysLog("database migration started")
 		err = migrateLOGDB()
 		return err
@@ -271,6 +289,9 @@ func migrateDB() error {
 	err := DB.AutoMigrate(
 		&Channel{},
 		&Token{},
+		&TokenModelChannel{},
+		&ChannelModelDisabled{},
+		&ChannelModelHealth{},
 		&User{},
 		&PasskeyCredential{},
 		&Option{},
@@ -325,6 +346,9 @@ func migrateDBFast() error {
 	}{
 		{&Channel{}, "Channel"},
 		{&Token{}, "Token"},
+		{&TokenModelChannel{}, "TokenModelChannel"},
+		{&ChannelModelDisabled{}, "ChannelModelDisabled"},
+		{&ChannelModelHealth{}, "ChannelModelHealth"},
 		{&User{}, "User"},
 		{&PasskeyCredential{}, "PasskeyCredential"},
 		{&Option{}, "Option"},

@@ -47,9 +47,13 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 	if info.PriceData.GroupRatioInfo.HasSpecialRatio {
 		other["user_group_ratio"] = info.PriceData.GroupRatioInfo.GroupSpecialRatio
 	}
+	appendTaskChannelRatio(other, info.ChannelMeta.GetChannelRatio())
 	if info.IsModelMapped {
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = info.UpstreamModelName
+	}
+	if channelRatio := info.ChannelMeta.GetChannelRatio(); channelRatio != 1.0 {
+		logContent = fmt.Sprintf("%s，渠道倍率 %.2f", logContent, channelRatio)
 	}
 	attachQuotaSaturation(c, info, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
@@ -127,6 +131,7 @@ func taskBillingOther(task *model.Task) map[string]interface{} {
 			other["model_ratio"] = bc.ModelRatio
 		}
 		other["group_ratio"] = bc.GroupRatio
+		appendTaskChannelRatioFromSnapshot(other, bc.ChannelRatio)
 		if priceData := taskBillingContextPriceData(bc); priceData != nil {
 			for k, v := range priceData.OtherRatios() {
 				other[k] = v
@@ -139,6 +144,32 @@ func taskBillingOther(task *model.Task) map[string]interface{} {
 		other["upstream_model_name"] = props.UpstreamModelName
 	}
 	return other
+}
+
+func appendTaskChannelRatio(other map[string]interface{}, channelRatio float64) {
+	if other == nil {
+		return
+	}
+	if channelRatio > 0 && channelRatio != 1.0 {
+		other["channel_ratio"] = channelRatio
+	}
+}
+
+func appendTaskChannelRatioFromSnapshot(other map[string]interface{}, channelRatio *float64) {
+	if channelRatio == nil {
+		return
+	}
+	appendTaskChannelRatio(other, *channelRatio)
+}
+
+func taskChannelRatio(task *model.Task) float64 {
+	if task == nil || task.PrivateData.BillingContext == nil || task.PrivateData.BillingContext.ChannelRatio == nil {
+		return 1.0
+	}
+	if *task.PrivateData.BillingContext.ChannelRatio < 0 {
+		return 1.0
+	}
+	return *task.PrivateData.BillingContext.ChannelRatio
 }
 
 func taskBillingContextPriceData(bc *model.TaskBillingContext) *types.PriceData {
@@ -309,10 +340,11 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	if priceData := taskBillingContextPriceData(task.PrivateData.BillingContext); priceData != nil {
 		otherMultiplier = priceData.OtherRatioMultiplier()
 	}
+	channelRatio := taskChannelRatio(task)
 
-	// 计算实际应扣费额度: totalTokens * modelRatio * groupRatio * otherMultiplier（饱和转换，防止溢出成负数）
-	actualQuota, clamp := common.QuotaFromFloatChecked(float64(totalTokens) * modelRatio * finalGroupRatio * otherMultiplier)
+	// 计算实际应扣费额度: totalTokens * modelRatio * groupRatio * channelRatio * otherMultiplier（饱和转换，防止溢出成负数）
+	actualQuota, clamp := common.QuotaFromFloatChecked(float64(totalTokens) * modelRatio * finalGroupRatio * channelRatio * otherMultiplier)
 
-	reason := fmt.Sprintf("token重算：tokens=%d, modelRatio=%.2f, groupRatio=%.2f, otherMultiplier=%.4f", totalTokens, modelRatio, finalGroupRatio, otherMultiplier)
+	reason := fmt.Sprintf("token重算：tokens=%d, modelRatio=%.2f, groupRatio=%.2f, channelRatio=%.2f, otherMultiplier=%.4f", totalTokens, modelRatio, finalGroupRatio, channelRatio, otherMultiplier)
 	RecalculateTaskQuota(ctx, task, actualQuota, reason, clamp)
 }

@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -887,6 +888,10 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if !claudeInfo.Done && claudeInfo.ResponseText.Len() == 0 && claudeInfo.Usage.CompletionTokens == 0 && (c == nil || c.Writer == nil || !c.Writer.Written()) {
+		return nil, types.NewError(errors.New("upstream stream ended without any content"), types.ErrorCodeEmptyResponse)
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)

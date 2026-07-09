@@ -717,6 +717,7 @@ export function ChannelMutateDrawer({
   const currentAdvancedCustom = form.watch('advanced_custom')
   const currentPriority = form.watch('priority')
   const currentWeight = form.watch('weight')
+  const currentRatio = form.watch('ratio')
   const currentTestModel = form.watch('test_model')
   const currentAutoBan = form.watch('auto_ban')
   const currentTag = form.watch('tag')
@@ -979,6 +980,7 @@ export function ChannelMutateDrawer({
   const routingStrategyConfigured = Boolean(
     currentPriority ||
     currentWeight ||
+    (currentRatio ?? 1) !== 1 ||
     currentTestModel?.trim() ||
     (currentAutoBan ?? 1) !== 1
   )
@@ -3639,6 +3641,30 @@ export function ChannelMutateDrawer({
                                     <FormDescription>
                                       {t(FIELD_DESCRIPTIONS.WEIGHT)}
                                     </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='ratio'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>{t('Channel Ratio')}</FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        placeholder='1'
+                                        min={0}
+                                        max={10}
+                                        step={0.1}
+                                        {...field}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                      />
+                                    </FormControl>
                                     <FormMessage />
                                   </FormItem>
                                 )}

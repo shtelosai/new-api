@@ -85,7 +85,7 @@ func TestTryTieredSettleUsesFrozenRequestInput(t *testing.T) {
 	}
 }
 
-func TestTryTieredSettleFallsBackToFrozenPreConsumeOnExprError(t *testing.T) {
+func TestTryTieredSettleFallsBackToRawEstimatedQuotaOnExprError(t *testing.T) {
 	relayInfo := &relaycommon.RelayInfo{
 		FinalPreConsumedQuota: 321,
 		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
@@ -101,8 +101,8 @@ func TestTryTieredSettleFallsBackToFrozenPreConsumeOnExprError(t *testing.T) {
 	if !ok {
 		t.Fatal("expected tiered settle to apply")
 	}
-	if quota != 321 {
-		t.Fatalf("quota = %d, want 321", quota)
+	if quota != 123 {
+		t.Fatalf("quota = %d, want 123", quota)
 	}
 	if result != nil {
 		t.Fatalf("result = %#v, want nil", result)

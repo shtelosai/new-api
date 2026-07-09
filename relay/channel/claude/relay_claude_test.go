@@ -1,11 +1,18 @@
 package claude
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -372,4 +379,70 @@ func TestRequestOpenAI2ClaudeMessage_ClaudeOpus48ThinkingUsesAdaptiveHighEffort(
 	require.Nil(t, claudeRequest.Temperature)
 	require.Nil(t, claudeRequest.TopP)
 	require.Nil(t, claudeRequest.TopK)
+}
+
+func newClaudeStreamTestContext(t *testing.T) *gin.Context {
+	t.Helper()
+	originStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = originStreamingTimeout
+	})
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	return c
+}
+
+func newClaudeStreamResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
+}
+
+func newClaudeStreamRelayInfo() *relaycommon.RelayInfo {
+	return &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatClaude,
+		DisablePing: true,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "claude-test",
+		},
+	}
+}
+
+func TestClaudeStreamHandlerEmptyStreamReturnsEmptyResponseBeforeWrite(t *testing.T) {
+	c := newClaudeStreamTestContext(t)
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(""), newClaudeStreamRelayInfo())
+
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCodeEmptyResponse, err.GetErrorCode())
+}
+
+func TestClaudeStreamHandlerEmptyStreamKeepsSuccessAfterWrite(t *testing.T) {
+	c := newClaudeStreamTestContext(t)
+	_, writeErr := c.Writer.Write([]byte(":"))
+	require.NoError(t, writeErr)
+	require.True(t, c.Writer.Written())
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(""), newClaudeStreamRelayInfo())
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+}
+
+func TestClaudeStreamHandlerMessageDeltaCompletesSuccessfully(t *testing.T) {
+	c := newClaudeStreamTestContext(t)
+	body := `data: {"type":"message_delta","usage":{"input_tokens":3,"output_tokens":2}}` + "\n\n"
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), newClaudeStreamRelayInfo())
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 2, usage.CompletionTokens)
 }

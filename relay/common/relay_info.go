@@ -66,6 +66,7 @@ type ChannelMeta struct {
 	ChannelIsMultiKey    bool
 	ChannelMultiKeyIndex int
 	ChannelBaseUrl       string
+	ChannelRatio         *float64
 	ApiType              int
 	ApiVersion           string
 	ApiKey               string
@@ -214,6 +215,12 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 		UpstreamModelName:    common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 		IsModelMapped:        false,
 		SupportStreamOptions: false,
+	}
+	if channelRatio, ok := common.GetContextKeyType[float64](c, constant.ContextKeyChannelRatio); ok && channelRatio >= 0 {
+		channelMeta.ChannelRatio = &channelRatio
+	} else {
+		channelRatio := 1.0
+		channelMeta.ChannelRatio = &channelRatio
 	}
 
 	if channelType == constant.ChannelTypeAzure {
@@ -517,6 +524,13 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	}
 
 	return info
+}
+
+func (cm *ChannelMeta) GetChannelRatio() float64 {
+	if cm == nil || cm.ChannelRatio == nil || *cm.ChannelRatio < 0 {
+		return 1.0
+	}
+	return *cm.ChannelRatio
 }
 
 func cloneRequestHeaders(c *gin.Context) map[string]string {

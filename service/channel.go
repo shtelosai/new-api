@@ -55,6 +55,12 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	if types.IsSkipRetryError(err) {
 		return false
 	}
+	if err.GetErrorCode() == types.ErrorCodeEmptyResponse {
+		return false
+	}
+	if IsSoftModelHealthError(err) {
+		return false
+	}
 	if operation_setting.ShouldDisableByStatusCode(err.StatusCode) {
 		return true
 	}

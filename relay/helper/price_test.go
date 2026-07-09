@@ -138,3 +138,86 @@ func TestModelPriceHelperTieredPreConsumeMaxTokensFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestModelPriceHelperTieredChannelRatioPreConsumeUsesIndependentCopy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		saved[key] = value
+		return nil
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(saved))
+	})
+
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{"tiered-channel-ratio-model":"tiered_expr"}`,
+		"billing_setting.billing_expr":    `{"tiered-channel-ratio-model":"tier(\"base\", p * 2 + c * 10)"}`,
+		"group_ratio_setting.group_ratio": `{"default":1}`,
+	}))
+
+	channelRatioTwo := 2.0
+	channelRatioZero := 0.0
+
+	cases := []struct {
+		name               string
+		channelRatio       *float64
+		wantPreConsume     int
+		wantSnapshotRaw    int
+		wantEstimatedAfter int
+	}{
+		{
+			name:               "default ratio",
+			wantPreConsume:     3500,
+			wantSnapshotRaw:    3500,
+			wantEstimatedAfter: 3500,
+		},
+		{
+			name:               "double ratio",
+			channelRatio:       &channelRatioTwo,
+			wantPreConsume:     7000,
+			wantSnapshotRaw:    3500,
+			wantEstimatedAfter: 3500,
+		},
+		{
+			name:               "free ratio",
+			channelRatio:       &channelRatioZero,
+			wantPreConsume:     0,
+			wantSnapshotRaw:    3500,
+			wantEstimatedAfter: 3500,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			req.Header.Set("Content-Type", "application/json")
+			ctx.Request = req
+
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "tiered-channel-ratio-model",
+				UserGroup:       "default",
+				UsingGroup:      "default",
+				RequestHeaders:  map[string]string{"Content-Type": "application/json"},
+				BillingRequestInput: &billingexpr.RequestInput{
+					Headers: map[string]string{"Content-Type": "application/json"},
+					Body:    []byte(`{}`),
+				},
+			}
+			if tc.channelRatio != nil {
+				info.ChannelMeta = &relaycommon.ChannelMeta{ChannelRatio: tc.channelRatio}
+			}
+
+			priceData, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{MaxTokens: 500})
+
+			require.NoError(t, err)
+			require.Equal(t, tc.wantPreConsume, priceData.QuotaToPreConsume)
+			require.NotNil(t, info.TieredBillingSnapshot)
+			require.Equal(t, tc.wantSnapshotRaw, info.TieredBillingSnapshot.EstimatedQuotaAfterGroup)
+			require.Equal(t, tc.wantEstimatedAfter, info.TieredBillingSnapshot.EstimatedQuotaAfterGroup)
+		})
+	}
+}

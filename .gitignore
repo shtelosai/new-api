@@ -41,3 +41,12 @@ skills-lock.json
 .local-tests/
 service/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
+
+# 本地演练专用（勿提交）
+/docker-compose.override.yml
+/rehearsal/schema_before.sql
+/rehearsal/schema_after.sql
+/rehearsal/schema_prod_after.sql
+/rehearsal/schema_diff.txt
+/rehearsal/docker_build.log
+/rehearsal/dump_err.txt

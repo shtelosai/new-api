@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -21,16 +22,19 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/relay"
+	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,6 +43,121 @@ type testResult struct {
 	context     *gin.Context
 	localErr    error
 	newAPIError *types.NewAPIError
+}
+
+func shouldUseClaudeAgentProbe(channel *model.Channel) bool {
+	return channel != nil &&
+		channel.Type == constant.ChannelTypeAnthropic &&
+		service.IsClaudeAgentProbeConfigured()
+}
+
+func buildClaudeAgentProbeCustomHeaders(info *relaycommon.RelayInfo) (map[string]string, string, string) {
+	headers := make(map[string]string)
+	claudeHeaders := http.Header{}
+	model_setting.GetClaudeSettings().WriteHeaders(info.OriginModelName, &claudeHeaders)
+	for key := range claudeHeaders {
+		value := strings.TrimSpace(claudeHeaders.Get(key))
+		if value != "" {
+			headers[key] = value
+		}
+	}
+
+	apiKey := info.ApiKey
+	authToken := ""
+	for key, value := range info.HeadersOverride {
+		if relaychannel.IsHeaderPassthroughRuleKey(key) {
+			continue
+		}
+		str, ok := value.(string)
+		if !ok {
+			continue
+		}
+		str = strings.TrimSpace(strings.ReplaceAll(str, "{api_key}", info.ApiKey))
+		if str == "" || strings.HasPrefix(str, "{client_header:") {
+			continue
+		}
+
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "authorization":
+			authToken = strings.TrimSpace(strings.TrimPrefix(str, "Bearer "))
+		case "x-api-key":
+			apiKey = str
+		default:
+			headers[key] = str
+		}
+	}
+
+	if len(headers) == 0 {
+		headers = nil
+	}
+	return headers, apiKey, authToken
+}
+
+func testChannelWithClaudeAgentProbe(c *gin.Context, channel *model.Channel, info *relaycommon.RelayInfo) (testResult, bool) {
+	if !shouldUseClaudeAgentProbe(channel) {
+		return testResult{}, false
+	}
+
+	headers, apiKey, authToken := buildClaudeAgentProbeCustomHeaders(info)
+	resp, err := service.ProbeClaudeAgent(c.Request.Context(), service.ClaudeAgentProbeRequest{
+		BaseURL:       info.ChannelBaseUrl,
+		APIKey:        apiKey,
+		AuthToken:     authToken,
+		Model:         info.UpstreamModelName,
+		TimeoutMs:     getModelProbeTimeoutSec() * 1000,
+		CustomHeaders: headers,
+	})
+	if err != nil && resp == nil {
+		common.SysError(fmt.Sprintf(
+			"claude agent probe unavailable: channel_id=%d model=%s error=%v",
+			channel.Id,
+			info.UpstreamModelName,
+			err,
+		))
+		return testResult{
+			context:  c,
+			localErr: fmt.Errorf("claude agent probe unavailable: %w", err),
+		}, true
+	}
+	if err != nil {
+		return testResult{
+			context:  c,
+			localErr: fmt.Errorf("claude agent probe service error: %w", err),
+		}, true
+	}
+	if resp == nil {
+		return testResult{
+			context:  c,
+			localErr: errors.New("claude agent probe returned empty response"),
+		}, true
+	}
+	if !resp.Success {
+		errMsg := strings.TrimSpace(resp.Error)
+		if errMsg == "" {
+			errMsg = "claude agent probe failed"
+		}
+		err := fmt.Errorf("claude agent probe failed: %s", errMsg)
+		if resp.LocalError {
+			return testResult{
+				context:  c,
+				localErr: err,
+			}, true
+		}
+		return testResult{
+			context:     c,
+			localErr:    err,
+			newAPIError: types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusBadGateway),
+		}, true
+	}
+
+	common.SysLog(fmt.Sprintf(
+		"claude agent probe success: channel_id=%d model=%s latency_ms=%d session=%s",
+		channel.Id,
+		info.UpstreamModelName,
+		resp.LatencyMs,
+		resp.SDKSessionID,
+	))
+	return testResult{context: c}, true
 }
 
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
@@ -268,6 +387,10 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	testModel = info.UpstreamModelName
 	// 更新请求中的模型名称
 	request.SetModelName(testModel)
+
+	if result, handled := testChannelWithClaudeAgentProbe(c, channel, info); handled {
+		return result
+	}
 
 	apiType, _ := common.ChannelType2APIType(channel.Type)
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact &&
@@ -536,21 +659,22 @@ func settleTestQuota(info *relaycommon.RelayInfo, priceData types.PriceData, usa
 		isClaudeUsageSemantic := usage.UsageSemantic == "anthropic" || info.GetFinalRequestRelayFormat() == types.RelayFormatClaude
 		usedVars := billingexpr.UsedVars(info.TieredBillingSnapshot.ExprString)
 		if ok, quota, result := service.TryTieredSettle(info, service.BuildTieredTokenParams(usage, isClaudeUsageSemantic, usedVars)); ok {
-			return quota, result
+			return common.QuotaRound(float64(quota) * info.ChannelMeta.GetChannelRatio()), result
 		}
 	}
 
+	channelRatio := info.ChannelMeta.GetChannelRatio()
 	quota := 0
 	if !priceData.UsePrice {
 		quota = usage.PromptTokens + int(math.Round(float64(usage.CompletionTokens)*priceData.CompletionRatio))
-		quota = int(math.Round(float64(quota) * priceData.ModelRatio))
-		if priceData.ModelRatio != 0 && quota <= 0 {
+		quota = common.QuotaRound(float64(quota) * priceData.ModelRatio * channelRatio)
+		if priceData.ModelRatio != 0 && channelRatio != 0 && quota <= 0 {
 			quota = 1
 		}
 		return quota, nil
 	}
 
-	return int(priceData.ModelPrice * common.QuotaPerUnit), nil
+	return common.QuotaFromFloat(priceData.ModelPrice * common.QuotaPerUnit * channelRatio), nil
 }
 
 func buildTestLogOther(c *gin.Context, info *relaycommon.RelayInfo, priceData types.PriceData, usage *dto.Usage, tieredResult *billingexpr.TieredResult) map[string]interface{} {
@@ -900,6 +1024,381 @@ type channelTestSummary struct {
 	Enabled   int `json:"enabled"`
 }
 
+func (summary *channelTestSummary) add(other channelTestSummary) {
+	summary.Tested += other.Tested
+	summary.Succeeded += other.Succeeded
+	summary.Failed += other.Failed
+	summary.Disabled += other.Disabled
+	summary.Enabled += other.Enabled
+}
+
+// 不支持 testChannel 自动探测的渠道类型（Midjourney / 视频类等）
+var unsupportedProbeChannelTypes = []int{
+	constant.ChannelTypeMidjourney,
+	constant.ChannelTypeMidjourneyPlus,
+	constant.ChannelTypeSunoAPI,
+	constant.ChannelTypeKling,
+	constant.ChannelTypeJimeng,
+	constant.ChannelTypeDoubaoVideo,
+	constant.ChannelTypeVidu,
+}
+
+func isUnsupportedProbeChannelType(channelType int) bool {
+	return lo.Contains(unsupportedProbeChannelTypes, channelType)
+}
+
+func shouldProbeChannelModels(channel *model.Channel) bool {
+	if channel == nil {
+		return false
+	}
+	if channel.Status == common.ChannelStatusManuallyDisabled {
+		return false
+	}
+	return channel.Type == constant.ChannelTypeAnthropic &&
+		!isUnsupportedProbeChannelType(channel.Type) &&
+		service.IsClaudeAgentProbeConfigured()
+}
+
+func getModelHealthProbeEndpointType(channel *model.Channel) string {
+	// 与后台弹窗模型测试保持一致：不指定 endpoint_type，让 testChannel 自动检测。
+	return ""
+}
+
+// probeResult 是单次 (channel, model) 健康探测的归一化结果。
+type probeResult struct {
+	success    bool
+	errMsg     string
+	latencyMs  int
+	attempts   int
+	isLocalErr bool // localErr != nil && newAPIError == nil → 跳过状态机
+	isSoftErr  bool // 上游临时限流/过载/无可用资源 → 重试确认后进入状态机
+	timedOut   bool // 触发硬超时
+}
+
+func probeTimeoutResult(timeoutSec int) probeResult {
+	return probeResult{
+		success:   false,
+		errMsg:    fmt.Sprintf("probe timeout after %ds", timeoutSec),
+		latencyMs: timeoutSec * 1000,
+		timedOut:  true,
+	}
+}
+
+// runProbe 执行单次健康探测，带硬超时保护。
+func runProbe(ctx context.Context, testUserID int, ch *model.Channel, modelName string, timeoutSec int) probeResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 20
+	}
+	start := time.Now()
+	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	resultCh := make(chan testResult, 1)
+	go func() {
+		resultCh <- testChannel(probeCtx, ch, testUserID, modelName, getModelHealthProbeEndpointType(ch), false)
+	}()
+
+	select {
+	case r := <-resultCh:
+		latency := int(time.Since(start).Milliseconds())
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return probeTimeoutResult(timeoutSec)
+		}
+		if r.newAPIError != nil {
+			return probeResult{
+				success:   false,
+				errMsg:    r.newAPIError.Error(),
+				latencyMs: latency,
+				isSoftErr: service.IsSoftModelHealthError(r.newAPIError),
+			}
+		}
+		if r.localErr != nil {
+			return probeResult{
+				success:    false,
+				errMsg:     "local: " + r.localErr.Error(),
+				latencyMs:  latency,
+				isLocalErr: true,
+			}
+		}
+		return probeResult{
+			success:   true,
+			latencyMs: latency,
+		}
+	case <-probeCtx.Done():
+		if ctx.Err() != nil {
+			return probeResult{
+				success:    false,
+				errMsg:     "local: " + ctx.Err().Error(),
+				latencyMs:  int(time.Since(start).Milliseconds()),
+				isLocalErr: true,
+			}
+		}
+		return probeTimeoutResult(timeoutSec)
+	}
+}
+
+type probeFunc func(ctx context.Context, ch *model.Channel, modelName string, timeoutSec int) probeResult
+
+// probeModelWithImmediateRetries 在同一轮巡检内立即确认失败。
+//
+// 语义:
+//   - 成功一次即返回成功
+//   - localErr 属于本地不支持/构造失败，不重试、不进入状态机
+//   - 上游错误或超时会立即重试，直到达到 maxAttempts
+func probeModelWithImmediateRetries(
+	ctx context.Context,
+	ch *model.Channel,
+	modelName string,
+	maxAttempts int,
+	timeoutSec int,
+	probe probeFunc,
+) probeResult {
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+
+	var last probeResult
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if ctx != nil && ctx.Err() != nil {
+			return probeResult{
+				success:    false,
+				errMsg:     "local: " + ctx.Err().Error(),
+				isLocalErr: true,
+				attempts:   attempt - 1,
+			}
+		}
+		last = probe(ctx, ch, modelName, timeoutSec)
+		last.attempts = attempt
+		if last.success || last.isLocalErr {
+			return last
+		}
+	}
+	return last
+}
+
+func shouldSkipProbeHealthStateMachine(result probeResult) bool {
+	return result.isLocalErr
+}
+
+func getModelProbeTimeoutSec() int {
+	timeout := int(math.Round(common.ChannelDisableThreshold))
+	if timeout <= 0 {
+		return 20
+	}
+	return timeout
+}
+
+type channelModelProbeTarget struct {
+	channel *model.Channel
+	model   string
+}
+
+type channelModelProbeGroup struct {
+	channel *model.Channel
+	models  []string
+}
+
+func buildScheduledProbeTargets(channels []*model.Channel) []channelModelProbeTarget {
+	targets := make([]channelModelProbeTarget, 0)
+	for _, channel := range channels {
+		if !shouldProbeChannelModels(channel) {
+			continue
+		}
+		seen := make(map[string]bool)
+		for _, rawModel := range channel.GetModels() {
+			modelName := strings.TrimSpace(rawModel)
+			if modelName == "" || seen[modelName] {
+				continue
+			}
+			seen[modelName] = true
+			targets = append(targets, channelModelProbeTarget{
+				channel: channel,
+				model:   modelName,
+			})
+		}
+	}
+	return targets
+}
+
+func buildPassiveRecoveryProbeTargets(channels []*model.Channel) ([]channelModelProbeTarget, error) {
+	channelByID := make(map[int]*model.Channel, len(channels))
+	for _, channel := range channels {
+		if channel != nil {
+			channelByID[channel.Id] = channel
+		}
+	}
+
+	var disabledRows []model.ChannelModelDisabled
+	if err := model.DB.Where(
+		"source IN ?",
+		[]string{model.DisabledSourceAuto, model.DisabledSourceRelay},
+	).Order("channel_id ASC, model ASC").Find(&disabledRows).Error; err != nil {
+		return nil, err
+	}
+
+	targets := make([]channelModelProbeTarget, 0, len(disabledRows))
+	for _, row := range disabledRows {
+		channel := channelByID[row.ChannelId]
+		if channel == nil || channel.Status != common.ChannelStatusEnabled || !shouldProbeChannelModels(channel) {
+			continue
+		}
+		modelName := strings.TrimSpace(row.Model)
+		if modelName == "" {
+			continue
+		}
+		targets = append(targets, channelModelProbeTarget{
+			channel: channel,
+			model:   modelName,
+		})
+	}
+	return targets, nil
+}
+
+func groupProbeTargetsByChannel(targets []channelModelProbeTarget) []channelModelProbeGroup {
+	groups := make([]channelModelProbeGroup, 0)
+	groupByChannelID := make(map[int]int)
+	for _, target := range targets {
+		if target.channel == nil || strings.TrimSpace(target.model) == "" {
+			continue
+		}
+		index, ok := groupByChannelID[target.channel.Id]
+		if !ok {
+			index = len(groups)
+			groupByChannelID[target.channel.Id] = index
+			groups = append(groups, channelModelProbeGroup{channel: target.channel})
+		}
+		groups[index].models = append(groups[index].models, target.model)
+	}
+	return groups
+}
+
+// runAllChannelModelProbes 保留老 fork 巡检语义：跨渠道并发、渠道内串行，
+// 每个失败模型在同一轮内立即重试确认，再把确认结果写入模型级健康状态机。
+func runAllChannelModelProbes(ctx context.Context, targets []channelModelProbeTarget, testUserID int, report func(processed, total int)) channelTestSummary {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	summary := channelTestSummary{}
+	total := len(targets)
+	if report != nil {
+		report(0, total)
+	}
+	if total == 0 {
+		return summary
+	}
+
+	concurrency := operation_setting.GetChannelHealthConcurrency()
+	maxAttempts := operation_setting.GetChannelHealthFailureThreshold()
+	probeTimeout := getModelProbeTimeoutSec()
+	sem := semaphore.NewWeighted(int64(concurrency))
+	groups := groupProbeTargetsByChannel(targets)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	processed := 0
+	runSingleProbe := func(probeCtx context.Context, ch *model.Channel, modelName string, timeoutSec int) probeResult {
+		return runProbe(probeCtx, testUserID, ch, modelName, timeoutSec)
+	}
+
+	for _, group := range groups {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := sem.Acquire(ctx, 1); err != nil {
+			if ctx.Err() == nil {
+				common.SysError(fmt.Sprintf("[channel_health] sem.Acquire failed: %v", err))
+			}
+			break
+		}
+		wg.Add(1)
+
+		go func(group channelModelProbeGroup) {
+			defer wg.Done()
+			defer sem.Release(1)
+
+			for _, modelName := range group.models {
+				if ctx.Err() != nil {
+					return
+				}
+
+				p := probeModelWithImmediateRetries(ctx, group.channel, modelName, maxAttempts, probeTimeout, runSingleProbe)
+				if ctx.Err() != nil {
+					return
+				}
+
+				skipStateMachine := shouldSkipProbeHealthStateMachine(p)
+				wasDisabled := false
+				if !skipStateMachine {
+					disabled, err := model.IsChannelModelDisabled(group.channel.Id, modelName)
+					if err != nil {
+						common.SysError(fmt.Sprintf(
+							"[channel_health] IsChannelModelDisabled before probe failed, channel=%d model=%s: %v",
+							group.channel.Id, modelName, err,
+						))
+					} else {
+						wasDisabled = disabled
+					}
+				}
+
+				isDisabled := wasDisabled
+				if skipStateMachine {
+					if err := model.UpdateHealthObservability(group.channel.Id, modelName, p.errMsg, p.latencyMs); err != nil {
+						common.SysError(fmt.Sprintf(
+							"[channel_health] UpdateHealthObservability failed, channel=%d model=%s: %v",
+							group.channel.Id, modelName, err,
+						))
+					}
+				} else {
+					service.HandleConfirmedProbeResult(group.channel.Id, modelName, p.success, p.errMsg, p.latencyMs, p.attempts)
+					group.channel.UpdateResponseTime(int64(p.latencyMs))
+					disabled, err := model.IsChannelModelDisabled(group.channel.Id, modelName)
+					if err != nil {
+						common.SysError(fmt.Sprintf(
+							"[channel_health] IsChannelModelDisabled after probe failed, channel=%d model=%s: %v",
+							group.channel.Id, modelName, err,
+						))
+					} else {
+						isDisabled = disabled
+					}
+				}
+
+				mu.Lock()
+				summary.Tested++
+				if p.success {
+					summary.Succeeded++
+					if !skipStateMachine && wasDisabled && !isDisabled {
+						summary.Enabled++
+					}
+				} else {
+					summary.Failed++
+					if !skipStateMachine && !wasDisabled && isDisabled {
+						summary.Disabled++
+					}
+				}
+				processed++
+				if report != nil {
+					report(processed, total)
+				}
+				mu.Unlock()
+
+				if common.RequestInterval > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(common.RequestInterval):
+					}
+				}
+			}
+		}(group)
+	}
+
+	wg.Wait()
+	return summary
+}
+
 // performChannelTests runs the channel test loop synchronously, honoring ctx
 // cancellation so a system-task runner that loses its lease stops promptly. When
 // report is non-nil it is called after each channel with (processed, total) so
@@ -1007,12 +1506,53 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 		mode = operation_setting.GetMonitorSetting().ChannelTestMode
 	}
 	selected := selectChannelsForAutomaticTest(channels, mode)
+	probeChannels, relayChannels := splitChannelsByProbe(selected)
+	probeTargets := buildScheduledProbeTargets(probeChannels)
+	if mode == operation_setting.ChannelTestModePassiveRecovery {
+		relayChannels = selected
+		probeTargets, err = buildPassiveRecoveryProbeTargets(channels)
+		if err != nil {
+			return channelTestSummary{}, err
+		}
+	}
+
+	totalWork := len(relayChannels) + len(probeTargets)
+	if report != nil && totalWork == 0 {
+		report(0, 0)
+	}
+	reportWithOffset := func(offset int) func(processed, total int) {
+		if report == nil {
+			return nil
+		}
+		return func(processed, _ int) {
+			report(offset+processed, totalWork)
+		}
+	}
+
 	allowDisable := mode != operation_setting.ChannelTestModePassiveRecovery
-	summary := performChannelTests(ctx, selected, testUserID, allowDisable, report)
+	summary := performChannelTests(ctx, relayChannels, testUserID, allowDisable, reportWithOffset(0))
+	if ctx != nil && ctx.Err() != nil {
+		return summary, nil
+	}
+	probeSummary := runAllChannelModelProbes(ctx, probeTargets, testUserID, reportWithOffset(len(relayChannels)))
+	summary.add(probeSummary)
 	if notify && (ctx == nil || ctx.Err() == nil) {
 		service.NotifyRootUser(dto.NotifyTypeChannelTest, "通道测试完成", "所有通道测试已完成")
 	}
 	return summary, nil
+}
+
+func splitChannelsByProbe(channels []*model.Channel) ([]*model.Channel, []*model.Channel) {
+	probeChannels := make([]*model.Channel, 0, len(channels))
+	relayChannels := make([]*model.Channel, 0, len(channels))
+	for _, channel := range channels {
+		if shouldProbeChannelModels(channel) {
+			probeChannels = append(probeChannels, channel)
+			continue
+		}
+		relayChannels = append(relayChannels, channel)
+	}
+	return probeChannels, relayChannels
 }
 
 func selectChannelsForAutomaticTest(channels []*model.Channel, mode string) []*model.Channel {

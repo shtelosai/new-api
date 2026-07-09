@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"math"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -320,6 +322,87 @@ func TestCalculateTextQuotaSummaryKeepsPrePRClaudeOpenRouterBilling(t *testing.T
 	require.Equal(t, 798, summary.Quota)
 }
 
+func TestCalculateTextQuotaSummaryAppliesChannelRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	usage := &dto.Usage{
+		PromptTokens:     10,
+		CompletionTokens: 5,
+	}
+
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "channel-ratio-text",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelRatio: float64Ptr(2),
+		},
+		PriceData: types.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 2,
+			GroupRatioInfo:  types.GroupRatioInfo{GroupRatio: 3},
+		},
+		StartTime: time.Now(),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+	// (10 + 5*2) * modelRatio(1) * groupRatio(3) * channelRatio(2) = 120
+	require.Equal(t, 120, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummaryAllowsFreeChannelRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "free-channel-text",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelRatio: float64Ptr(0),
+		},
+		PriceData: types.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 1,
+			GroupRatioInfo:  types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{
+		PromptTokens:     10,
+		CompletionTokens: 5,
+	})
+
+	require.Equal(t, 0, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummaryAppliesChannelRatioForPriceBilling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "channel-ratio-price",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelRatio: float64Ptr(2),
+		},
+		PriceData: types.PriceData{
+			UsePrice:       true,
+			ModelPrice:     2,
+			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 3},
+		},
+		StartTime: time.Now(),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{
+		PromptTokens:     10,
+		CompletionTokens: 5,
+	})
+
+	require.Equal(t, int(2*3*2*common.QuotaPerUnit), summary.Quota)
+}
+
 func TestComposeTieredTextQuotaKeepsToolCallSurcharges(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -440,6 +523,81 @@ func TestComposeTieredTextQuotaErrorFallbackUsesPreConsumedQuota(t *testing.T) {
 
 	require.Equal(t, int64(12500), summary.ToolCallSurchargeQuota.Round(0).IntPart())
 	require.Equal(t, 14500, quota)
+}
+
+func TestComposeTieredTextQuotaChannelRatioMatrix(t *testing.T) {
+	channelRatioTwo := 2.0
+	channelRatioZero := 0.0
+
+	ratioCases := []struct {
+		name      string
+		ratio     *float64
+		effective float64
+	}{
+		{name: "default", effective: 1},
+		{name: "double", ratio: &channelRatioTwo, effective: 2},
+		{name: "free", ratio: &channelRatioZero, effective: 0},
+	}
+
+	for _, ratioCase := range ratioCases {
+		for _, surcharge := range []int64{0, 200} {
+			for _, fallback := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/surcharge_%d/fallback_%t", ratioCase.name, surcharge, fallback), func(t *testing.T) {
+					relayInfo := &relaycommon.RelayInfo{
+						TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+							BillingMode: "tiered_expr",
+							GroupRatio:  1.25,
+						},
+					}
+					if ratioCase.ratio != nil {
+						relayInfo.ChannelMeta = &relaycommon.ChannelMeta{ChannelRatio: ratioCase.ratio}
+					}
+
+					summary := textQuotaSummary{
+						ToolCallSurchargeQuota: decimal.NewFromInt(surcharge),
+					}
+					tieredQuotaAfterGroup := 1250
+					var result *billingexpr.TieredResult
+					if !fallback {
+						result = &billingexpr.TieredResult{
+							ActualQuotaBeforeGroup: 1000,
+							ActualQuotaAfterGroup:  tieredQuotaAfterGroup,
+						}
+					}
+
+					got := composeTieredTextQuota(relayInfo, summary, tieredQuotaAfterGroup, result)
+					wantDecimal := decimal.NewFromInt(1250).Add(decimal.NewFromInt(surcharge)).Mul(decimal.NewFromFloat(ratioCase.effective))
+					require.Equal(t, int(wantDecimal.IntPart()), got)
+				})
+			}
+		}
+	}
+}
+
+func TestTieredErrorFallbackUsesRawEstimateBeforeChannelRatio(t *testing.T) {
+	channelRatio := 2.0
+	relayInfo := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelRatio: &channelRatio,
+		},
+		// FinalPreConsumedQuota already includes channelRatio and must not feed
+		// settlement fallback, otherwise compose would multiply it again.
+		FinalPreConsumedQuota: 2500,
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:              "tiered_expr",
+			ExprString:               "invalid +++ expr",
+			ExprHash:                 billingexpr.ExprHashString("invalid +++ expr"),
+			GroupRatio:               1,
+			EstimatedQuotaAfterGroup: 1250,
+		},
+	}
+
+	ok, tieredQuota, result := TryTieredSettle(relayInfo, billingexpr.TokenParams{P: 100})
+
+	require.True(t, ok)
+	require.Nil(t, result)
+	require.Equal(t, 1250, tieredQuota)
+	require.Equal(t, 2500, composeTieredTextQuota(relayInfo, textQuotaSummary{}, tieredQuota, result))
 }
 
 // TestTryTieredSettleRecordsClampOnOverflow guards that an oversized tiered

@@ -45,6 +45,20 @@ func InitChannelCache() {
 	for _, ability := range abilities {
 		groups[ability.Group] = true
 	}
+	// 读取 (channel_id, model) 级禁用黑名单（健康检查 + Relay 失败写入的记录）。
+	// 加载失败时保留旧缓存，避免降级为全开放。
+	disabledList, err := GetAllChannelModelDisabled()
+	if err != nil {
+		common.SysError("load channel_model_disabled failed, keep previous cache: " + err.Error())
+		return
+	}
+	disabledSet := make(map[int]map[string]bool)
+	for _, disabled := range disabledList {
+		if disabledSet[disabled.ChannelId] == nil {
+			disabledSet[disabled.ChannelId] = make(map[string]bool)
+		}
+		disabledSet[disabled.ChannelId][disabled.Model] = true
+	}
 	newGroup2model2channels := make(map[string]map[string][]int)
 	for group := range groups {
 		newGroup2model2channels[group] = make(map[string][]int)
@@ -57,6 +71,13 @@ func InitChannelCache() {
 		for _, group := range groups {
 			models := strings.Split(channel.Models, ",")
 			for _, model := range models {
+				model = strings.TrimSpace(model)
+				if model == "" {
+					continue
+				}
+				if disabledSet[channel.Id][model] {
+					continue
+				}
 				if _, ok := newGroup2model2channels[group][model]; !ok {
 					newGroup2model2channels[group][model] = make([]int, 0)
 				}
@@ -97,6 +118,53 @@ func InitChannelCache() {
 	common.SysLog("channels synced from database")
 }
 
+func RemoveChannelModelFromCache(channelId int, modelName string) {
+	if !common.MemoryCacheEnabled {
+		return
+	}
+	modelName = strings.TrimSpace(modelName)
+	if channelId <= 0 || modelName == "" {
+		return
+	}
+
+	channelSyncLock.Lock()
+	defer channelSyncLock.Unlock()
+
+	for group, model2channels := range group2model2channels {
+		for cachedModel, channels := range model2channels {
+			if !isSameCacheModel(cachedModel, modelName) {
+				continue
+			}
+
+			filtered := make([]int, 0, len(channels))
+			removed := false
+			for _, id := range channels {
+				if id == channelId {
+					removed = true
+					continue
+				}
+				filtered = append(filtered, id)
+			}
+			if !removed {
+				continue
+			}
+			if len(filtered) == 0 {
+				delete(group2model2channels[group], cachedModel)
+			} else {
+				group2model2channels[group][cachedModel] = filtered
+			}
+		}
+	}
+}
+
+func isSameCacheModel(cachedModel, disabledModel string) bool {
+	cachedModel = strings.TrimSpace(cachedModel)
+	disabledModel = strings.TrimSpace(disabledModel)
+	return cachedModel == disabledModel ||
+		ratio_setting.FormatMatchingModelName(cachedModel) == disabledModel ||
+		cachedModel == ratio_setting.FormatMatchingModelName(disabledModel)
+}
+
 func SyncChannelCache(frequency int) {
 	for {
 		time.Sleep(time.Duration(frequency) * time.Second)
@@ -105,8 +173,9 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string, tokenId int) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
+	// 注意：非缓存模式下 token_model_channels 过滤不生效，生产环境应启用 MemoryCache。
 	if !common.MemoryCacheEnabled {
 		return GetChannel(group, model, retry, requestPath)
 	}
@@ -123,6 +192,11 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 		channels = filterChannelsByRequestPath(group2model2channels[group][normalizedModel], requestPath)
 	}
 
+	if len(channels) == 0 {
+		return nil, nil
+	}
+
+	channels = FilterChannelsByToken(channels, tokenId, model)
 	if len(channels) == 0 {
 		return nil, nil
 	}
