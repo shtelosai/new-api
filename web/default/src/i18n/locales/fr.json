@@ -2195,7 +2195,6 @@
     "hours": "heures",
     "How a call is priced": "Comment un appel est tarifé",
     "How client credentials are sent to the token endpoint": "Comment les informations d'identification client sont envoyées au point de terminaison de jeton",
-    "How frequently the system checks auto-disabled channels for recovery": "Fréquence à laquelle le système vérifie la récupération des canaux désactivés automatiquement",
     "How frequently the system tests all channels": "Fréquence à laquelle le système teste tous les canaux",
     "How It Works": "Comment ça marche",
     "How model mapping works": "Fonctionnement du mappage des modèles",
@@ -3910,7 +3909,6 @@
     "Scenario Templates": "Modèles de scénario",
     "Scheduled channel tests": "Tests de canaux planifiés",
     "Scheduled full test": "Test complet planifié",
-    "Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "Le test complet planifié sonde les canaux non désactivés manuellement ; la récupération passive vérifie uniquement les canaux désactivés automatiquement après des échecs de requêtes réelles.",
     "scheduling controls": "contrôles d'ordonnancement",
     "Science": "Science",
     "Scope": "Portée",
@@ -5107,6 +5105,13 @@
     "Zero retention": "Aucune rétention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Model disable cleared for {{model}}": "Model disable cleared for {{model}}",
+    "Failed to clear model disable": "Failed to clear model disable",
+    "Clear disable": "Clear disable",
+    "Click again to confirm": "Click again to confirm",
+    "Clearing...": "Clearing...",
+    "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.",
+    "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery"
   }
 }

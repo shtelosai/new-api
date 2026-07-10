@@ -968,7 +968,9 @@ func TestChannel(c *gin.Context) {
 	//		go func() { _ = channel.SaveChannelInfo() }()
 	//	}
 	//}()
-	testModel := c.Query("model")
+	// 统一 trim：测试、非空判断、恢复键必须是同一个值，避免带空格参数导致
+	// "测试的模型"与"恢复的模型"错位（禁用行存的是原始模型名）。
+	testModel := strings.TrimSpace(c.Query("model"))
 	endpointType := c.Query("endpoint_type")
 	isStream, _ := strconv.ParseBool(c.Query("stream"))
 	testUserID, err := resolveChannelTestUserID(c)
@@ -1006,6 +1008,20 @@ func TestChannel(c *gin.Context) {
 			"error_code": result.newAPIError.GetErrorCode(),
 		})
 		return
+	}
+	// 显式单模型测试成功 → 立即恢复该模型的 auto/relay 禁用（保留 manual），
+	// 让"手动测试成功"真正等于"模型恢复上线"；不带 model 的渠道级测试不猜测恢复对象。
+	// 成功语义 = DB 禁用行已清除，缓存重建 best-effort 由周期同步兜底；
+	// 恢复事务失败必须返回失败——测试成功但模型仍下线不能报成功。
+	if testModel != "" {
+		if recoverErr := service.HandleConfirmedProbeResult(channel.Id, testModel, true, "", int(milliseconds), 1); recoverErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("模型测试成功，但恢复上线状态失败: %s", recoverErr.Error()),
+				"time":    consumedTime,
+			})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1098,7 +1114,8 @@ func runProbe(ctx context.Context, testUserID int, ch *model.Channel, modelName 
 
 	resultCh := make(chan testResult, 1)
 	go func() {
-		resultCh <- testChannel(probeCtx, ch, testUserID, modelName, getModelHealthProbeEndpointType(ch), false)
+		// 流式规则与渠道级自动测试对齐：Codex 类渠道必须流式，其余（含 Anthropic）非流式
+		resultCh <- testChannel(probeCtx, ch, testUserID, modelName, getModelHealthProbeEndpointType(ch), shouldUseStreamForAutomaticChannelTest(ch))
 	}()
 
 	select {
@@ -1179,12 +1196,22 @@ func probeModelWithImmediateRetries(
 	return last
 }
 
-func shouldSkipProbeHealthStateMachine(result probeResult) bool {
-	return result.isLocalErr
+// shouldSkipProbeHealthStateMachine 判定探测结果是否跳过健康状态机：
+//   - localErr（本地不支持/构造失败）永远跳过，只更新观测；
+//   - recoveryOnly（被动恢复模式）下失败也跳过——目标本就处于禁用态，无需再写禁用，
+//     且不能改写禁用行的 relay 原始 source/reason；成功仍进状态机触发恢复。
+func shouldSkipProbeHealthStateMachine(result probeResult, recoveryOnly bool) bool {
+	if result.isLocalErr {
+		return true
+	}
+	return recoveryOnly && !result.success
 }
 
+// getModelProbeTimeoutSec 模型级探针超时（秒），passive 与 scheduled_all 探针共享。
+// 读专用配置 channel_health_setting.probe_timeout_sec（默认 20s）；此前误用
+// ChannelDisableThreshold（5s 响应时间禁用阈值），SDK 冷启动探针必然超时误判。
 func getModelProbeTimeoutSec() int {
-	timeout := int(math.Round(common.ChannelDisableThreshold))
+	timeout := operation_setting.GetChannelHealthProbeTimeoutSec()
 	if timeout <= 0 {
 		return 20
 	}
@@ -1242,7 +1269,9 @@ func buildPassiveRecoveryProbeTargets(channels []*model.Channel) ([]channelModel
 	targets := make([]channelModelProbeTarget, 0, len(disabledRows))
 	for _, row := range disabledRows {
 		channel := channelByID[row.ChannelId]
-		if channel == nil || channel.Status != common.ChannelStatusEnabled || !shouldProbeChannelModels(channel) {
+		// 被动恢复覆盖全部常规渠道类型：Anthropic 走探针短路，其余走 testChannel
+		// 真实最小请求；仅排除 testChannel 不支持的 Midjourney/视频类渠道。
+		if channel == nil || channel.Status != common.ChannelStatusEnabled || isUnsupportedProbeChannelType(channel.Type) {
 			continue
 		}
 		modelName := strings.TrimSpace(row.Model)
@@ -1275,9 +1304,14 @@ func groupProbeTargetsByChannel(targets []channelModelProbeTarget) []channelMode
 	return groups
 }
 
-// runAllChannelModelProbes 保留老 fork 巡检语义：跨渠道并发、渠道内串行，
-// 每个失败模型在同一轮内立即重试确认，再把确认结果写入模型级健康状态机。
-func runAllChannelModelProbes(ctx context.Context, targets []channelModelProbeTarget, testUserID int, report func(processed, total int)) channelTestSummary {
+// runAllChannelModelProbes 跨渠道并发、渠道内串行地探测模型健康。
+//
+// 两种语义：
+//   - scheduled_all（recoveryOnly=false）：保留老 fork 巡检语义，失败模型同轮立即
+//     重试确认（最多 FailureThreshold 次），确认结果写入状态机（可禁用可恢复）。
+//   - passive_recovery（recoveryOnly=true）：目标本就是已禁用模型，每轮只探 1 次；
+//     失败不进状态机（只更新观测，不改写禁用行的 source/reason），成功一次即恢复。
+func runAllChannelModelProbes(ctx context.Context, targets []channelModelProbeTarget, testUserID int, recoveryOnly bool, report func(processed, total int)) channelTestSummary {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1292,6 +1326,9 @@ func runAllChannelModelProbes(ctx context.Context, targets []channelModelProbeTa
 
 	concurrency := operation_setting.GetChannelHealthConcurrency()
 	maxAttempts := operation_setting.GetChannelHealthFailureThreshold()
+	if recoveryOnly {
+		maxAttempts = 1
+	}
 	probeTimeout := getModelProbeTimeoutSec()
 	sem := semaphore.NewWeighted(int64(concurrency))
 	groups := groupProbeTargetsByChannel(targets)
@@ -1329,7 +1366,7 @@ func runAllChannelModelProbes(ctx context.Context, targets []channelModelProbeTa
 					return
 				}
 
-				skipStateMachine := shouldSkipProbeHealthStateMachine(p)
+				skipStateMachine := shouldSkipProbeHealthStateMachine(p, recoveryOnly)
 				wasDisabled := false
 				if !skipStateMachine {
 					disabled, err := model.IsChannelModelDisabled(group.channel.Id, modelName)
@@ -1352,7 +1389,8 @@ func runAllChannelModelProbes(ctx context.Context, targets []channelModelProbeTa
 						))
 					}
 				} else {
-					service.HandleConfirmedProbeResult(group.channel.Id, modelName, p.success, p.errMsg, p.latencyMs, p.attempts)
+					// 事务失败已在 service 内记日志，巡检路径下轮自然重试，无需中断本轮
+					_ = service.HandleConfirmedProbeResult(group.channel.Id, modelName, p.success, p.errMsg, p.latencyMs, p.attempts)
 					group.channel.UpdateResponseTime(int64(p.latencyMs))
 					disabled, err := model.IsChannelModelDisabled(group.channel.Id, modelName)
 					if err != nil {
@@ -1508,8 +1546,11 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 	selected := selectChannelsForAutomaticTest(channels, mode)
 	probeChannels, relayChannels := splitChannelsByProbe(selected)
 	probeTargets := buildScheduledProbeTargets(probeChannels)
-	if mode == operation_setting.ChannelTestModePassiveRecovery {
-		relayChannels = selected
+	recoveryOnly := mode == operation_setting.ChannelTestModePassiveRecovery
+	if recoveryOnly {
+		// 被动恢复只做模型级探活：不再对 status=AutoDisabled 的整渠道发默认模型测试，
+		// 探活目标独立从 channel_model_disabled(source IN auto,relay) 生成。
+		relayChannels = nil
 		probeTargets, err = buildPassiveRecoveryProbeTargets(channels)
 		if err != nil {
 			return channelTestSummary{}, err
@@ -1529,12 +1570,12 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 		}
 	}
 
-	allowDisable := mode != operation_setting.ChannelTestModePassiveRecovery
+	allowDisable := !recoveryOnly
 	summary := performChannelTests(ctx, relayChannels, testUserID, allowDisable, reportWithOffset(0))
 	if ctx != nil && ctx.Err() != nil {
 		return summary, nil
 	}
-	probeSummary := runAllChannelModelProbes(ctx, probeTargets, testUserID, reportWithOffset(len(relayChannels)))
+	probeSummary := runAllChannelModelProbes(ctx, probeTargets, testUserID, recoveryOnly, reportWithOffset(len(relayChannels)))
 	summary.add(probeSummary)
 	if notify && (ctx == nil || ctx.Err() == nil) {
 		service.NotifyRootUser(dto.NotifyTypeChannelTest, "通道测试完成", "所有通道测试已完成")

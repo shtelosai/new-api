@@ -2195,7 +2195,6 @@
     "hours": "часов",
     "How a call is priced": "Как рассчитывается стоимость вызова",
     "How client credentials are sent to the token endpoint": "Как учетные данные клиента отправляются на конечную точку токена",
-    "How frequently the system checks auto-disabled channels for recovery": "Как часто система проверяет автоматически отключенные каналы для восстановления",
     "How frequently the system tests all channels": "Как часто система тестирует все каналы",
     "How It Works": "Как это работает",
     "How model mapping works": "Как работает сопоставление моделей",
@@ -3910,7 +3909,6 @@
     "Scenario Templates": "Шаблоны сценариев",
     "Scheduled channel tests": "Запланированные тесты канала",
     "Scheduled full test": "Полная проверка по расписанию",
-    "Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "Полная проверка по расписанию проверяет каналы, не отключенные вручную; пассивное восстановление проверяет только автоматически отключенные каналы после сбоев реальных запросов.",
     "scheduling controls": "механизмов управления маршрутизацией",
     "Science": "Наука",
     "Scope": "Область",
@@ -5107,6 +5105,13 @@
     "Zero retention": "Без хранения данных",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Model disable cleared for {{model}}": "Model disable cleared for {{model}}",
+    "Failed to clear model disable": "Failed to clear model disable",
+    "Clear disable": "Clear disable",
+    "Click again to confirm": "Click again to confirm",
+    "Clearing...": "Clearing...",
+    "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.",
+    "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery"
   }
 }

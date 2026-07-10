@@ -1504,7 +1504,7 @@
     "Each tier supports 0~2 conditions (over len, p, c); the last tier is the catch-all without conditions. Use len (full input length, including cache hits) for tier conditions to avoid mis-routing when cache hits reduce p.": "每個檔位支援 0~2 個條件（針對 len、p、c），最後一檔為兜底檔無需條件。建議條件使用 len（完整輸入長度，含緩存命中），避免緩存命中降低 p 導致檔位誤判。",
     "Each tier supports up to 2 conditions; the last tier is the catch-all without conditions. Use full input length for tier conditions to avoid mis-routing when cache hits reduce billable input tokens.": "每個檔位最多支援 2 個條件；最後一個檔位是不帶條件的兜底檔。建議使用完整輸入長度作為檔位條件，避免緩存命中減少收費輸入 token 後誤判檔位。",
     "Each tier supports up to 2 conditions. The last tier without conditions is the fallback.": "每個階梯最多支援 2 個條件。最後一個無條件階梯作為兜底。",
-    "Earn rewards when your referrals add funds. Transfer accumulated rewards to your balance anytime.": "當您的推薦人儲值時即可獲得獎勵。隨時將累計獎勵轉移到您的餘額。",
+    "Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.": "Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.",
     "Edit": "編輯",
     "Edit {{title}}": "編輯{{title}}",
     "Edit all channels with tag:": "編輯所有帶有標籤的渠道：",
@@ -2195,7 +2195,6 @@
     "hours": "小時",
     "How a call is priced": "一次呼叫如何計價",
     "How client credentials are sent to the token endpoint": "用戶端憑證如何發送至令牌端點",
-    "How frequently the system checks auto-disabled channels for recovery": "系統檢查自動停用渠道是否可恢復的頻率",
     "How frequently the system tests all channels": "系統測試所有渠道的頻率",
     "How It Works": "工作流程",
     "How model mapping works": "模型映射如何運作",
@@ -3910,7 +3909,6 @@
     "Scenario Templates": "場景模板",
     "Scheduled channel tests": "定期渠道測試",
     "Scheduled full test": "定時全量測試",
-    "Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "定時全量測試會探測非手動停用的渠道；僅被動恢復只會在真實請求失敗導致渠道自動停用後檢查這些渠道是否可恢復。",
     "scheduling controls": "調度控制能力",
     "Science": "科研",
     "Scope": "作用域",
@@ -5107,6 +5105,13 @@
     "Zero retention": "零數據保留",
     "Zhipu": "智譜",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Model disable cleared for {{model}}": "Model disable cleared for {{model}}",
+    "Failed to clear model disable": "Failed to clear model disable",
+    "Clear disable": "Clear disable",
+    "Click again to confirm": "Click again to confirm",
+    "Clearing...": "Clearing...",
+    "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.",
+    "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery"
   }
 }

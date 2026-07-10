@@ -55,7 +55,11 @@ func HandleTestResult(channelId int, modelName string, success bool, errMsg stri
 // 语义：
 //   - success=true：成功一次即恢复 auto/relay 禁用
 //   - success=false：调用方已经完成连续失败确认，立即写 disabled(source='auto')
-func HandleConfirmedProbeResult(channelId int, modelName string, success bool, errMsg string, latencyMs int, attempts int) {
+//
+// 返回值 error 表示恢复/禁用事务本身失败（禁用状态未变更）；手动测试路径据此
+// 向管理员返回失败，避免"测试成功但未恢复上线"的假成功。成功语义 = DB 禁用行
+// 已清除；内存缓存重建为 best-effort，由周期同步兜底（最终一致）。
+func HandleConfirmedProbeResult(channelId int, modelName string, success bool, errMsg string, latencyMs int, attempts int) error {
 	action, err := model.ApplyConfirmedProbeResultInTx(
 		channelId, modelName,
 		success, errMsg, latencyMs,
@@ -66,7 +70,7 @@ func HandleConfirmedProbeResult(channelId int, modelName string, success bool, e
 			"[channel_health] ApplyConfirmedProbeResultInTx failed, channel=%d model=%s: %v",
 			channelId, modelName, err,
 		))
-		return
+		return err
 	}
 
 	switch action {
@@ -83,18 +87,18 @@ func HandleConfirmedProbeResult(channelId int, modelName string, success bool, e
 			channelId, modelName,
 		))
 	}
+	return nil
 }
 
 // DisableChannelModelFromRelay Relay 真实请求失败触发的即时模型级禁用（不防抖）
 //
 // 语义：
-//   - 立即写入 disabled(source='relay')，覆盖 (auto|relay) 的任何已有禁用
+//   - 立即写入 disabled(source='relay')，覆盖 auto/relay 的已有禁用
+//   - manual 禁用存在时**不覆盖**：人工锁必须保持可靠——被动探活只恢复 auto/relay，
+//     若 manual 被在途异步失败/指定渠道请求覆盖成 relay，随后会被探活自动清除，
+//     管理员意图将被静默撤销。manual 场景下模型本就已下线，这里只做幂等摘缓存。
 //   - 同步把 channel_model_health 计数设到失败阈值，避免下一轮健康检查因"已禁用"
 //     却只失败 1~2 次而意外触发恢复
-//
-// 注意：manual 禁用存在时也会被 Upsert 覆盖为 relay——这里是有意的，因为真实
-//
-//	流量失败是比 manual 更强的信号；人工想锁死请把 channels.status 改为 2。
 func DisableChannelModelFromRelay(channelId int, modelName, reason string) {
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
@@ -108,16 +112,24 @@ func DisableChannelModelFromRelay(channelId int, modelName, reason string) {
 		return
 	}
 
-	if err := model.UpsertChannelModelDisabled(
+	changed, err := model.UpsertChannelModelDisabledPreservingManual(
 		channelId, modelName, model.DisabledSourceRelay, reason,
-	); err != nil {
+	)
+	if err != nil {
 		common.SysError(fmt.Sprintf(
-			"[channel_health] UpsertChannelModelDisabled failed, channel=%d model=%s: %v",
+			"[channel_health] UpsertChannelModelDisabledPreservingManual failed, channel=%d model=%s: %v",
 			channelId, modelName, err,
 		))
 		return
 	}
 	model.RemoveChannelModelFromCache(channelId, modelName)
+	if !changed {
+		common.SysLog(fmt.Sprintf(
+			"[channel_health] relay-disable kept existing manual lock, channel=%d model=%s",
+			channelId, modelName,
+		))
+		return
+	}
 
 	// 把计数推到失败阈值，防止健康检查误恢复
 	failN := operation_setting.GetChannelHealthFailureThreshold()

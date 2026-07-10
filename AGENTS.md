@@ -96,6 +96,14 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - Preserve explicit zero values in upstream relay request DTOs: absent client JSON fields must become `nil` and be omitted, while explicit `0`, `0.0`, or `false` values must remain non-`nil` and be sent upstream.
 - Avoid non-pointer scalars with `omitempty` for optional request parameters, because zero values will be silently dropped during marshal.
 
+**Model health & disable/recovery invariants:**
+
+- Model-level disable lives in `channel_model_disabled` (PK channel_id+model, source ∈ auto/relay/manual). Automatic recovery (probe or manual test success) only ever deletes `source IN ('auto','relay')`; `manual` is a hard lock — relay failures must NOT overwrite it (`UpsertChannelModelDisabledPreservingManual`), and the only way to remove it is the explicit admin action `DELETE /api/channel/model-disabled` (permission `ChannelOperate`, precise audit `channel.model_disabled_clear`).
+- `passive_recovery` test mode is recovery-only: probe targets come solely from `channel_model_disabled` (auto/relay) across all regular channel types, one probe per (channel, model) per round; probe failures must NOT enter the disable state machine (observability update only) so the original relay source/reason is preserved. `scheduled_all` keeps the legacy retry-and-confirm semantics.
+- Model probe timeout reads `channel_health_setting.probe_timeout_sec` (shared by passive and scheduled probes); do not reuse `ChannelDisableThreshold` (that is the response-time disable threshold).
+- Manual single-model test (`GET /api/channel/test/:id?model=`) trims the model param, and on success must call the confirmed-probe recovery path; a recovery transaction error must surface as a failed test response ("tested OK" must mean "back online in DB"). Tests without an explicit `model` never trigger recovery. Cache rebuild after recovery is best-effort; DB is the source of truth with periodic sync as backstop.
+- Non-chat models (TTS/ASR/video) cannot be probed correctly; they stay disabled until cleared via the explicit admin action. Do not "fix" this by widening auto-probe heuristics without symmetric request builders.
+
 **Billing expression system:** When working on tiered/dynamic billing (expression-based pricing), MUST read `pkg/billingexpr/expr.md` first. It documents the design philosophy, expression language, full architecture, token normalization rules, quota conversion, and expression versioning. All billing expression changes must follow that document.
 
 **Billing safety invariants:** Quota/billing code MUST never produce a negative charge (a credit) from arithmetic overflow or unvalidated input. Apply defense in depth:

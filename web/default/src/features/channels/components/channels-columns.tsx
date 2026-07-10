@@ -41,23 +41,35 @@ import { TruncatedText } from '@/components/truncated-text'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { toIntlLocale } from '@/i18n/languages'
+import {
+  ADMIN_PERMISSION_ACTIONS,
+  ADMIN_PERMISSION_RESOURCES,
+  hasPermission,
+} from '@/lib/admin-permissions'
 import {
   formatCurrencyFromUSD,
   formatQuotaWithCurrency,
   getCurrencyLabel,
 } from '@/lib/currency'
-import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestampToDate } from '@/lib/format'
 import { truncateText } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
-import { getCodexUsage } from '../api'
+import { clearChannelModelDisabled, getCodexUsage } from '../api'
 import { CHANNEL_STATUS_CONFIG, MODEL_FETCHABLE_TYPES } from '../constants'
 import {
+  channelsQueryKeys,
   formatRelativeTime,
   formatResponseTime,
   getBalanceVariant,
@@ -323,6 +335,118 @@ function getModelStatusBadgeConfig(
   return { labelKey: 'Unknown', variant: 'neutral' }
 }
 
+type ChannelModelStatusItem = NonNullable<Channel['model_statuses']>[number]
+
+function clearButtonLabel(
+  t: (key: string) => string,
+  pending: boolean,
+  confirming: boolean
+): string {
+  if (pending) {
+    return t('Clearing...')
+  }
+  if (confirming) {
+    return t('Click again to confirm')
+  }
+  return t('Clear disable')
+}
+
+// 已禁用模型的圆点：点击弹出可交互 Popover（Tooltip 无法承载按钮），
+// 提供「解除禁用」显式管理动作——manual 人工锁与无法探活模型的唯一恢复入口。
+function DisabledModelDot({
+  channel,
+  status,
+}: {
+  channel: Channel
+  status: ChannelModelStatusItem
+}) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const currentUser = useAuthStore((s) => s.auth.user)
+  const canOperate = hasPermission(
+    currentUser,
+    ADMIN_PERMISSION_RESOURCES.CHANNEL,
+    ADMIN_PERMISSION_ACTIONS.OPERATE
+  )
+  const [open, setOpen] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [pending, setPending] = useState(false)
+  const config = getModelStatusBadgeConfig(status.status)
+
+  const handleClear = async () => {
+    // 两步确认 + pending 防重复提交
+    if (!confirming) {
+      setConfirming(true)
+      return
+    }
+    if (pending) return
+    setPending(true)
+    try {
+      const res = await clearChannelModelDisabled(channel.id, status.model)
+      if (res.success) {
+        toast.success(
+          t('Model disable cleared for {{model}}', { model: status.model })
+        )
+        setOpen(false)
+        queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+      } else {
+        toast.error(res.message || t('Failed to clear model disable'))
+      }
+    } catch {
+      toast.error(t('Failed to clear model disable'))
+    } finally {
+      setPending(false)
+      setConfirming(false)
+    }
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) setConfirming(false)
+      }}
+    >
+      <PopoverTrigger
+        render={
+          <button
+            type='button'
+            className='inline-block size-2.5 shrink-0 cursor-pointer rounded-full bg-red-500'
+            aria-label={`${status.model} — ${t(config.labelKey)}`}
+          />
+        }
+      />
+      <PopoverContent side='top' className='w-80'>
+        <div className='space-y-1 text-sm'>
+          <div className='font-mono font-medium break-all'>{status.model}</div>
+          <div>{t(config.labelKey)}</div>
+          {status.source && (
+            <div className='text-muted-foreground'>
+              {t('Source')}: {status.source}
+            </div>
+          )}
+          {status.reason && (
+            <div className='text-muted-foreground break-words'>
+              {t('Disable Reason')}: {status.reason}
+            </div>
+          )}
+        </div>
+        {canOperate && (
+          <Button
+            size='sm'
+            variant={confirming ? 'destructive' : 'outline'}
+            disabled={pending}
+            onClick={handleClear}
+          >
+            {clearButtonLabel(t, pending, confirming)}
+          </Button>
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function ModelStatusesCell({ channel }: { channel: Channel }) {
   const { t } = useTranslation()
   const isTagRow = isTagAggregateRow(channel)
@@ -332,7 +456,8 @@ function ModelStatusesCell({ channel }: { channel: Channel }) {
     return <span className='text-muted-foreground text-xs'>-</span>
   }
 
-  // 一个模型一个圆点，颜色表状态：绿=正常 / 红=已禁用 / 灰=未知；hover 显示模型名+状态+来源+原因
+  // 一个模型一个圆点，颜色表状态：绿=正常 / 红=已禁用 / 灰=未知；
+  // 正常/未知 hover 显示详情；已禁用点击弹出 Popover，可执行「解除禁用」
   return (
     <TooltipProvider>
       <div
@@ -340,13 +465,20 @@ function ModelStatusesCell({ channel }: { channel: Channel }) {
         onClick={(e) => e.stopPropagation()}
       >
         {statuses.map((status) => {
+          if (status.status === 'disabled') {
+            return (
+              <DisabledModelDot
+                key={status.model}
+                channel={channel}
+                status={status}
+              />
+            )
+          }
           const config = getModelStatusBadgeConfig(status.status)
           const dotColor =
             status.status === 'healthy'
               ? 'bg-emerald-500'
-              : status.status === 'disabled'
-                ? 'bg-red-500'
-                : 'bg-muted-foreground'
+              : 'bg-muted-foreground'
           return (
             <Tooltip key={status.model}>
               <TooltipTrigger
@@ -361,16 +493,6 @@ function ModelStatusesCell({ channel }: { channel: Channel }) {
                 <div className='space-y-0.5'>
                   <div className='font-mono font-medium'>{status.model}</div>
                   <div>{t(config.labelKey)}</div>
-                  {status.source && (
-                    <div>
-                      {t('Source')}: {status.source}
-                    </div>
-                  )}
-                  {status.reason && (
-                    <div className='break-words'>
-                      {t('Disable Reason')}: {status.reason}
-                    </div>
-                  )}
                 </div>
               </TooltipContent>
             </Tooltip>

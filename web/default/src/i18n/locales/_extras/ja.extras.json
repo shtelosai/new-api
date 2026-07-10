@@ -1,0 +1,4 @@
+{
+  "translation.How frequently the system checks auto-disabled channels for recovery": "自動無効化されたチャネルの復旧を確認する頻度",
+  "translation.Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "定期フルテストは手動で無効化されていないチャネルを検査します。パッシブ復旧は実リクエストの失敗後に自動無効化されたチャネルのみを確認します。"
+}

@@ -1,0 +1,6 @@
+{
+  "Failed to clear model disable": "Failed to clear model disable",
+  "Click again to confirm": "Click again to confirm",
+  "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.",
+  "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery"
+}

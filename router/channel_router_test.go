@@ -16,6 +16,8 @@ func TestChannelStatusRoutesUseOperatePermission(t *testing.T) {
 	assertChannelRoutePermission(t, http.MethodPost, "/:id/status", authz.ChannelOperate, controller.UpdateChannelStatus)
 	assertChannelRoutePermission(t, http.MethodPost, "/status/batch", authz.ChannelOperate, controller.BatchUpdateChannelStatus)
 	assertChannelRoutePermission(t, http.MethodPut, "/", authz.ChannelWrite, controller.UpdateChannel)
+	// 「解除禁用」可解锁 manual 人工锁，必须绑定 ChannelOperate 细粒度权限
+	assertChannelRoutePermission(t, http.MethodDelete, "/model-disabled", authz.ChannelOperate, controller.ClearChannelModelDisabled)
 }
 
 func TestChannelDeleteRoutesUseSensitiveWritePermission(t *testing.T) {

@@ -1,0 +1,4 @@
+{
+  "translation.How frequently the system checks auto-disabled channels for recovery": "系統檢查自動停用渠道是否可恢復的頻率",
+  "translation.Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "定時全量測試會探測非手動停用的渠道；僅被動恢復只會在真實請求失敗導致渠道自動停用後檢查這些渠道是否可恢復。"
+}

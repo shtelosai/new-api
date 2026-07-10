@@ -419,7 +419,7 @@ export function RoutingReliabilitySection({
                     </Select>
                     <FormDescription>
                       {t(
-                        'Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.'
+                        'Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.'
                       )}
                     </FormDescription>
                     <FormMessage />
@@ -444,7 +444,7 @@ export function RoutingReliabilitySection({
                     <FormDescription>
                       {channelTestMode === 'passive_recovery'
                         ? t(
-                            'How frequently the system checks auto-disabled channels for recovery'
+                            'How frequently the system probes disabled models for recovery'
                           )
                         : t('How frequently the system tests all channels')}
                     </FormDescription>

@@ -1,8 +1,11 @@
 package model
 
 import (
+	"errors"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -89,4 +92,89 @@ func DeleteChannelModelDisabledNotInModels(channelId int, keepModels []string) e
 		q = q.Where("model NOT IN ?", keepModels)
 	}
 	return q.Delete(&ChannelModelDisabled{}).Error
+}
+
+// lockChannelModelDisabledRow 与 lockChannelModelHealthRow 同一模式：
+// MySQL/PG 用 SELECT FOR UPDATE 行锁，SQLite 退化为普通事务查询。
+func lockChannelModelDisabledRow(tx *gorm.DB, channelId int, modelName string) *gorm.DB {
+	query := tx.Where("channel_id = ? AND model = ?", channelId, modelName)
+	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
+		return query
+	}
+	return query.Clauses(clause.Locking{Strength: "UPDATE"})
+}
+
+// UpsertChannelModelDisabledPreservingManual 写入/覆盖禁用记录，但保留 manual 人工锁：
+// 已有行 source=manual 时不做任何覆盖（返回 changed=false）；auto/relay 行照常覆盖。
+// manual 是可靠人工锁的前提——自动恢复只清 auto/relay，若 relay 覆盖 manual，
+// 探活成功后人工禁用会被静默清除。
+func UpsertChannelModelDisabledPreservingManual(channelId int, modelName, source, reason string) (bool, error) {
+	if len(reason) > 500 {
+		reason = reason[:500]
+	}
+	changed := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var existing ChannelModelDisabled
+		err := lockChannelModelDisabledRow(tx, channelId, modelName).First(&existing).Error
+		if err == nil {
+			if existing.Source == DisabledSourceManual {
+				return nil // 保留人工锁，不覆盖
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		row := ChannelModelDisabled{
+			ChannelId:  channelId,
+			Model:      modelName,
+			Source:     source,
+			Reason:     reason,
+			DisabledAt: time.Now().Unix(),
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "channel_id"}, {Name: "model"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"source", "reason", "disabled_at",
+			}),
+		}).Create(&row).Error; err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
+}
+
+// ClearChannelModelDisabledInTx 显式管理动作「解除禁用」：单事务删除该 (channel, model)
+// 禁用行（任意 source，含 manual——区别于自动恢复）并重置健康失败状态，避免解除后
+// 状态列仍按旧 LastError 展示异常。返回被删除行的 source（无行时 changed=false）。
+func ClearChannelModelDisabledInTx(channelId int, modelName string) (previousSource string, changed bool, err error) {
+	txErr := DB.Transaction(func(tx *gorm.DB) error {
+		var existing ChannelModelDisabled
+		findErr := lockChannelModelDisabledRow(tx, channelId, modelName).First(&existing).Error
+		if findErr != nil {
+			if errors.Is(findErr, gorm.ErrRecordNotFound) {
+				return nil // 幂等：行不存在视为成功
+			}
+			return findErr
+		}
+		previousSource = existing.Source
+		if err := tx.Where(
+			"channel_id = ? AND model = ?", channelId, modelName,
+		).Delete(&ChannelModelDisabled{}).Error; err != nil {
+			return err
+		}
+		// 重置健康失败计数与错误观测（保留 LastSuccessAt，状态自然回落 unknown/healthy）
+		if err := tx.Model(&ChannelModelHealth{}).
+			Where("channel_id = ? AND model = ?", channelId, modelName).
+			Updates(map[string]interface{}{
+				"consecutive_failures":  0,
+				"consecutive_successes": 0,
+				"last_error":            "",
+			}).Error; err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return previousSource, changed, txErr
 }

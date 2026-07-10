@@ -2195,7 +2195,6 @@
     "hours": "小时",
     "How a call is priced": "一次调用如何计价",
     "How client credentials are sent to the token endpoint": "客户端凭据如何发送至令牌端点",
-    "How frequently the system checks auto-disabled channels for recovery": "系统检查自动禁用渠道是否可恢复的频率",
     "How frequently the system tests all channels": "系统测试所有渠道的频率",
     "How It Works": "工作流程",
     "How model mapping works": "模型映射如何工作",
@@ -3910,7 +3909,6 @@
     "Scenario Templates": "场景模板",
     "Scheduled channel tests": "定期渠道测试",
     "Scheduled full test": "定时全量测试",
-    "Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "定时全量测试会探测非手动禁用的渠道；仅被动恢复只会在真实请求失败导致渠道自动禁用后检查这些渠道是否可恢复。",
     "scheduling controls": "调度控制能力",
     "Science": "科研",
     "Scope": "作用域",
@@ -5107,6 +5105,13 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Model disable cleared for {{model}}": "已解除模型 {{model}} 的禁用",
+    "Failed to clear model disable": "解除模型禁用失败",
+    "Clear disable": "解除禁用",
+    "Click again to confirm": "再次点击确认",
+    "Clearing...": "解除中...",
+    "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "定时全量测试会探测非手动禁用的渠道；仅被动恢复只对真实请求失败被禁用的模型探活，探活成功即自动恢复上线。无法探活的模型（如 TTS/ASR）会保持禁用，需手动解除。",
+    "How frequently the system probes disabled models for recovery": "系统对被禁用模型探活恢复的频率"
   }
 }

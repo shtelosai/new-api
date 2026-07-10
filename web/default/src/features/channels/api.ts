@@ -221,6 +221,29 @@ export async function testChannel(
   return res.data
 }
 
+export type ClearChannelModelDisabledResponse = {
+  success: boolean
+  message?: string
+  data?: {
+    changed: boolean
+    previous_source?: string
+  }
+}
+
+/**
+ * Clear a (channel, model) disabled record (any source, including manual)
+ */
+export async function clearChannelModelDisabled(
+  channelId: number,
+  model: string
+): Promise<ClearChannelModelDisabledResponse> {
+  const res = await api.delete(
+    '/api/channel/model-disabled',
+    channelActionConfig({ params: { channel_id: channelId, model } })
+  )
+  return res.data
+}
+
 /**
  * Update channel balance
  */

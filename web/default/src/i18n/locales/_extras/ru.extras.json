@@ -1,0 +1,4 @@
+{
+  "translation.How frequently the system checks auto-disabled channels for recovery": "Как часто система проверяет автоматически отключенные каналы для восстановления",
+  "translation.Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "Полная проверка по расписанию проверяет каналы, не отключенные вручную; пассивное восстановление проверяет только автоматически отключенные каналы после сбоев реальных запросов."
+}

@@ -1,0 +1,4 @@
+{
+  "translation.How frequently the system checks auto-disabled channels for recovery": "Tần suất hệ thống kiểm tra các kênh bị tự động vô hiệu hóa để khôi phục",
+  "translation.Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "Kiểm tra toàn bộ theo lịch sẽ dò các kênh không bị vô hiệu hóa thủ công; khôi phục thụ động chỉ kiểm tra các kênh bị tự động vô hiệu hóa sau lỗi từ yêu cầu thực tế."
+}

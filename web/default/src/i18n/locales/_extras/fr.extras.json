@@ -1,0 +1,4 @@
+{
+  "translation.How frequently the system checks auto-disabled channels for recovery": "Fréquence à laquelle le système vérifie la récupération des canaux désactivés automatiquement",
+  "translation.Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "Le test complet planifié sonde les canaux non désactivés manuellement ; la récupération passive vérifie uniquement les canaux désactivés automatiquement après des échecs de requêtes réelles."
+}

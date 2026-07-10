@@ -2195,7 +2195,6 @@
     "hours": "時間",
     "How a call is priced": "呼び出しの計算方法",
     "How client credentials are sent to the token endpoint": "クライアント認証情報がトークンエンドポイントに送信される方法",
-    "How frequently the system checks auto-disabled channels for recovery": "自動無効化されたチャネルの復旧を確認する頻度",
     "How frequently the system tests all channels": "システムがすべてのチャネルをテストする頻度",
     "How It Works": "仕組み",
     "How model mapping works": "モデルマッピングの仕組み",
@@ -3910,7 +3909,6 @@
     "Scenario Templates": "シナリオテンプレート",
     "Scheduled channel tests": "スケジュールされたチャネルテスト",
     "Scheduled full test": "定期フルテスト",
-    "Scheduled full test probes non-manually-disabled channels; passive recovery only checks auto-disabled channels after real request failures.": "定期フルテストは手動で無効化されていないチャネルを検査します。パッシブ復旧は実リクエストの失敗後に自動無効化されたチャネルのみを確認します。",
     "scheduling controls": "スケジューリング制御",
     "Science": "科学",
     "Scope": "スコープ",
@@ -5107,6 +5105,13 @@
     "Zero retention": "データ保持なし",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Model disable cleared for {{model}}": "Model disable cleared for {{model}}",
+    "Failed to clear model disable": "Failed to clear model disable",
+    "Clear disable": "Clear disable",
+    "Click again to confirm": "Click again to confirm",
+    "Clearing...": "Clearing...",
+    "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.",
+    "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery"
   }
 }
