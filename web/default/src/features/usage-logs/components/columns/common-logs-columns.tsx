@@ -608,6 +608,31 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
     },
     size: 160,
   })
+
+  if (isAdmin) {
+    columns.push({
+      accessorKey: 'twork_username',
+      header: t('Username'),
+      cell: function TworkUsernameCell({ row }) {
+        const { sensitiveVisible } = useUsageLogsContext()
+        const username = row.original.twork_username
+        if (!username) {
+          return <span className='text-muted-foreground/40'>—</span>
+        }
+
+        return (
+          <span
+            className='text-muted-foreground block max-w-[140px] truncate text-sm'
+            title={sensitiveVisible ? username : undefined}
+          >
+            {sensitiveVisible ? username : '••••'}
+          </span>
+        )
+      },
+      size: 140,
+    })
+  }
+
   columns.push(
     {
       accessorKey: 'model_name',

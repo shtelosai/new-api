@@ -220,6 +220,10 @@ function CommonLogsCard<TData>({
           valueClassName='[&_.flex-col]:max-w-none [&_.flex-col>*:not(:first-child)]:text-[11px] [&_.flex-col>*:not(:first-child)]:leading-none'
         />
         <SummaryField
+          label={t('Username')}
+          cell={cells.get('twork_username')}
+        />
+        <SummaryField
           label={t('Timing')}
           cell={cells.get('use_time')}
           primaryOnly

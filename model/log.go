@@ -64,6 +64,7 @@ type Log struct {
 	Content           string `json:"content"`
 	Username          string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
 	TokenName         string `json:"token_name" gorm:"index;default:''"`
+	TworkUsername     string `json:"twork_username,omitempty" gorm:"-"`
 	ModelName         string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
 	Quota             int    `json:"quota" gorm:"default:0"`
 	PromptTokens      int    `json:"prompt_tokens" gorm:"default:0"`
@@ -129,6 +130,38 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		logs[i].Other = common.MapToJsonStr(otherMap)
 	}
 	assignDisplayLogIds(logs, startIdx)
+}
+
+func fillLogTworkUsernames(logs []*Log) error {
+	tokenIds := types.NewSet[int]()
+	for _, log := range logs {
+		if log.TokenId > 0 {
+			tokenIds.Add(log.TokenId)
+		}
+	}
+	if tokenIds.Len() == 0 {
+		return nil
+	}
+
+	var tokens []struct {
+		Id            int    `gorm:"column:id"`
+		TworkUsername string `gorm:"column:twork_username"`
+	}
+	if err := DB.Unscoped().Table("tokens").
+		Select("id, twork_username").
+		Where("id IN ?", tokenIds.Items()).
+		Find(&tokens).Error; err != nil {
+		return err
+	}
+
+	usernameByTokenId := make(map[int]string, len(tokens))
+	for _, token := range tokens {
+		usernameByTokenId[token.Id] = token.TworkUsername
+	}
+	for _, log := range logs {
+		log.TworkUsername = usernameByTokenId[log.TokenId]
+	}
+	return nil
 }
 
 func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
@@ -554,6 +587,9 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		for i := range logs {
 			logs[i].ChannelName = channelMap[logs[i].ChannelId]
 		}
+	}
+	if err := fillLogTworkUsernames(logs); err != nil {
+		common.SysError("failed to fill Twork usernames for logs: " + err.Error())
 	}
 
 	return logs, total, err
