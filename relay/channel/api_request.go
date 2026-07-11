@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -94,6 +95,59 @@ var passthroughSkipHeaderNamesLower = map[string]struct{}{
 }
 
 var headerPassthroughRegexCache sync.Map // map[string]*regexp.Regexp
+
+const liteLLMCallIDHeader = "X-Litellm-Call-Id"
+
+func newUpstreamRequest(c *gin.Context, fullRequestURL string, requestBody io.Reader) (*http.Request, error) {
+	return http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
+}
+
+func dialUpstreamWebSocket(c *gin.Context, fullRequestURL string, header http.Header) (*websocket.Conn, *http.Response, error) {
+	requestCtx := c.Request.Context()
+	dialer := *websocket.DefaultDialer
+	var (
+		connMu sync.Mutex
+		conn   net.Conn
+	)
+	dialer.NetDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialed, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		connMu.Lock()
+		defer connMu.Unlock()
+		if err = requestCtx.Err(); err != nil {
+			_ = dialed.Close()
+			return nil, err
+		}
+		conn = dialed
+		return dialed, nil
+	}
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-requestCtx.Done():
+			connMu.Lock()
+			if conn != nil {
+				_ = conn.Close()
+			}
+			connMu.Unlock()
+		case <-done:
+		}
+	}()
+
+	return dialer.DialContext(requestCtx, fullRequestURL, header)
+}
+
+func upstreamRequestIDFromHeaders(headers http.Header) string {
+	if requestID := headers.Get(common2.RequestIdKey); requestID != "" {
+		return requestID
+	}
+	return headers.Get(liteLLMCallIDHeader)
+}
 
 func getHeaderPassthroughRegex(pattern string) (*regexp.Regexp, error) {
 	pattern = strings.TrimSpace(pattern)
@@ -310,7 +364,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", fullRequestURL)
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := newUpstreamRequest(c, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -340,7 +394,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", fullRequestURL)
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := newUpstreamRequest(c, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -386,7 +440,7 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		targetHeader.Set(key, value)
 	}
 	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
-	targetConn, _, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
+	targetConn, _, err := dialUpstreamWebSocket(c, fullRequestURL, targetHeader)
 	if err != nil {
 		return nil, fmt.Errorf("dial failed to %s: %w", fullRequestURL, err)
 	}
@@ -508,14 +562,18 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.LogError(c, "do request failed: "+err.Error())
+		if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+			logger.LogInfo(c, "upstream request canceled: "+err.Error())
+		} else {
+			logger.LogError(c, "do request failed: "+err.Error())
+		}
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")
 	}
 
-	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
+	if upID := upstreamRequestIDFromHeaders(resp.Header); upID != "" {
 		c.Set(common2.UpstreamRequestIdKey, upID)
 	}
 
@@ -529,7 +587,7 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := newUpstreamRequest(c, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}

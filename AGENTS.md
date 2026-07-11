@@ -92,6 +92,9 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 **Relay and provider behavior:**
 
 - When implementing a new channel, confirm whether the provider supports `StreamOptions`; if supported, add the channel to `streamSupportedChannels`.
+- Outbound relay HTTP requests and WebSocket handshakes must inherit the incoming request context. Once the client context ends, stop retries and do not treat the cancellation as a channel/model-health or performance failure; genuine upstream empty responses remain retryable while the client is active.
+- Relay-triggered model disable must atomically persist the `relay` disabled row and failure-threshold health state; readers must never observe a disabled row with stale failure counters.
+- Upstream request ID capture prefers `X-Oneapi-Request-Id` and falls back to LiteLLM's `X-Litellm-Call-Id` without changing the existing `logs.upstream_request_id` contract.
 - For request structs parsed from client JSON and re-marshaled to upstream providers, optional scalar fields MUST use pointer types with `omitempty` (for example, `*int`, `*uint`, `*float64`, `*bool`).
 - Preserve explicit zero values in upstream relay request DTOs: absent client JSON fields must become `nil` and be omitted, while explicit `0`, `0.0`, or `false` values must remain non-`nil` and be sent upstream.
 - Avoid non-pointer scalars with `omitempty` for optional request parameters, because zero values will be silently dropped during marshal.

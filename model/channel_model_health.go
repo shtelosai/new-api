@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -239,6 +240,71 @@ func ApplyTestResultInTx(
 	})
 
 	return action, txErr
+}
+
+// DisableChannelModelFromRelayInTx atomically records a relay failure as both
+// a relay disable and a failed health state. Manual disables are preserved and
+// leave health counters unchanged, matching the relay-disable contract.
+func DisableChannelModelFromRelayInTx(channelId int, modelName, reason string, failThreshold int) (changed bool, err error) {
+	if len(reason) > 1000 {
+		reason = reason[:1000]
+	}
+	if failThreshold <= 0 {
+		failThreshold = 1
+	}
+	now := time.Now().Unix()
+
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&ChannelModelHealth{ChannelId: channelId, Model: modelName}).Error; err != nil {
+			return err
+		}
+
+		var health ChannelModelHealth
+		if err := lockChannelModelHealthRow(tx, channelId, modelName).First(&health).Error; err != nil {
+			return err
+		}
+
+		var disabled ChannelModelDisabled
+		findErr := lockChannelModelDisabledRow(tx, channelId, modelName).First(&disabled).Error
+		if findErr == nil && disabled.Source == DisabledSourceManual {
+			return nil
+		}
+		if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+			return findErr
+		}
+
+		health.ConsecutiveFailures = failThreshold
+		health.ConsecutiveSuccesses = 0
+		health.LastError = reason
+		health.LastTestedAt = now
+		health.LatencyMs = 0
+		if err := tx.Save(&health).Error; err != nil {
+			return err
+		}
+
+		disabledReason := reason
+		if len(disabledReason) > 500 {
+			disabledReason = disabledReason[:500]
+		}
+		disabled = ChannelModelDisabled{
+			ChannelId:  channelId,
+			Model:      modelName,
+			Source:     DisabledSourceRelay,
+			Reason:     disabledReason,
+			DisabledAt: now,
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "channel_id"}, {Name: "model"}},
+			DoUpdates: clause.AssignmentColumns([]string{"source", "reason", "disabled_at"}),
+		}).Create(&disabled).Error; err != nil {
+			return err
+		}
+
+		changed = true
+		return nil
+	})
+	return changed, err
 }
 
 // ApplyConfirmedProbeResultInTx 持久化同一轮内已经确认过的探测结果

@@ -1,14 +1,99 @@
 package channel
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNewUpstreamRequestInheritsClientContext(t *testing.T) {
+	t.Parallel()
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil).WithContext(requestCtx)
+
+	req, err := newUpstreamRequest(c, "https://example.com/v1/messages", nil)
+	require.NoError(t, err)
+
+	cancel()
+	require.ErrorIs(t, req.Context().Err(), context.Canceled)
+}
+
+func TestUpstreamRequestIDFromHeadersPrefersOneAPIID(t *testing.T) {
+	t.Parallel()
+
+	headers := http.Header{}
+	headers.Set("X-Oneapi-Request-Id", "oneapi-id")
+	headers.Set("X-Litellm-Call-Id", "litellm-id")
+
+	require.Equal(t, "oneapi-id", upstreamRequestIDFromHeaders(headers))
+}
+
+func TestUpstreamRequestIDFromHeadersFallsBackToLiteLLMCallID(t *testing.T) {
+	t.Parallel()
+
+	headers := http.Header{}
+	headers.Set("X-Litellm-Call-Id", "litellm-id")
+
+	require.Equal(t, "litellm-id", upstreamRequestIDFromHeaders(headers))
+}
+
+func TestDialUpstreamWebSocketHonorsClientContext(t *testing.T) {
+	requestCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upstreamStarted := make(chan struct{})
+	upstreamCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+		<-r.Context().Done()
+		close(upstreamCanceled)
+	}))
+	t.Cleanup(server.Close)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime", nil).WithContext(requestCtx)
+
+	done := make(chan error, 1)
+	go func() {
+		conn, _, err := dialUpstreamWebSocket(c, strings.Replace(server.URL, "http://", "ws://", 1), http.Header{})
+		if conn != nil {
+			_ = conn.Close()
+		}
+		done <- err
+	}()
+
+	select {
+	case <-upstreamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for websocket handshake")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("websocket dial did not return after client cancellation")
+	}
+
+	select {
+	case <-upstreamCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream websocket handshake was not canceled")
+	}
+}
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	t.Parallel()

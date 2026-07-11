@@ -88,6 +88,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
+			if relayRequestContextDone(c) {
+				logger.LogInfo(c, "relay canceled because client request context ended")
+				return
+			}
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
@@ -229,6 +233,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
+		if relayRequestContextDone(c) {
+			break
+		}
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
@@ -242,7 +249,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
 		logger.LogInfo(c, retryLogStr)
 	}
-	if newAPIError != nil {
+	if newAPIError != nil && !relayRequestContextDone(c) {
 		gopool.Go(func() {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
@@ -323,7 +330,14 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
+func relayRequestContextDone(c *gin.Context) bool {
+	return c != nil && c.Request != nil && c.Request.Context().Err() != nil
+}
+
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+	if relayRequestContextDone(c) {
+		return false
+	}
 	if c != nil && c.Writer != nil && c.Writer.Written() {
 		return false
 	}
@@ -359,6 +373,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
+	if relayRequestContextDone(c) {
+		return
+	}
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
@@ -562,6 +579,9 @@ func RelayTask(c *gin.Context) {
 		if taskErr == nil {
 			break
 		}
+		if relayRequestContextDone(c) {
+			break
+		}
 
 		if !taskErr.LocalError {
 			processChannelError(c,
@@ -619,6 +639,9 @@ func RelayTask(c *gin.Context) {
 
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）
 func respondTaskError(c *gin.Context, taskErr *dto.TaskError) {
+	if relayRequestContextDone(c) {
+		return
+	}
 	if taskErr.StatusCode == http.StatusTooManyRequests {
 		taskErr.Message = "当前分组上游负载已饱和，请稍后再试"
 	}
@@ -626,6 +649,9 @@ func respondTaskError(c *gin.Context, taskErr *dto.TaskError) {
 }
 
 func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError, retryTimes int) bool {
+	if relayRequestContextDone(c) {
+		return false
+	}
 	if taskErr == nil {
 		return false
 	}

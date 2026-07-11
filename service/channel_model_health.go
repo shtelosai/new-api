@@ -112,12 +112,11 @@ func DisableChannelModelFromRelay(channelId int, modelName, reason string) {
 		return
 	}
 
-	changed, err := model.UpsertChannelModelDisabledPreservingManual(
-		channelId, modelName, model.DisabledSourceRelay, reason,
-	)
+	failN := operation_setting.GetChannelHealthFailureThreshold()
+	changed, err := model.DisableChannelModelFromRelayInTx(channelId, modelName, reason, failN)
 	if err != nil {
 		common.SysError(fmt.Sprintf(
-			"[channel_health] UpsertChannelModelDisabledPreservingManual failed, channel=%d model=%s: %v",
+			"[channel_health] DisableChannelModelFromRelayInTx failed, channel=%d model=%s: %v",
 			channelId, modelName, err,
 		))
 		return
@@ -129,17 +128,6 @@ func DisableChannelModelFromRelay(channelId int, modelName, reason string) {
 			channelId, modelName,
 		))
 		return
-	}
-
-	// 把计数推到失败阈值，防止健康检查误恢复
-	failN := operation_setting.GetChannelHealthFailureThreshold()
-	successM := operation_setting.GetChannelHealthSuccessThreshold()
-	for i := 0; i < failN; i++ {
-		_, _ = model.ApplyTestResultInTx(
-			channelId, modelName,
-			false, reason, 0,
-			failN, successM,
-		)
 	}
 
 	common.SysLog(fmt.Sprintf(

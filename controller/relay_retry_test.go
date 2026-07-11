@@ -1,11 +1,13 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -17,6 +19,14 @@ func newRetryTestContext() *gin.Context {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	return c
+}
+
+func newCanceledRetryTestContext() *gin.Context {
+	c := newRetryTestContext()
+	requestCtx, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(requestCtx)
+	cancel()
 	return c
 }
 
@@ -132,4 +142,39 @@ func TestShouldRetryRetriesEmptyResponseBeforeWrite(t *testing.T) {
 	err := types.NewError(errors.New("upstream stream ended without any content"), types.ErrorCodeEmptyResponse)
 
 	require.True(t, shouldRetry(c, err, 1))
+}
+
+func TestShouldRetryDoesNotRetryAfterClientCancel(t *testing.T) {
+	c := newCanceledRetryTestContext()
+
+	tests := []struct {
+		name string
+		err  *types.NewAPIError
+	}{
+		{
+			name: "empty response",
+			err:  types.NewError(errors.New("upstream stream ended without any content"), types.ErrorCodeEmptyResponse),
+		},
+		{
+			name: "channel error",
+			err:  types.NewError(errors.New("no available key"), types.ErrorCodeChannelNoAvailableKey),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.False(t, shouldRetry(c, tt.err, 1))
+		})
+	}
+}
+
+func TestShouldRetryTaskRelayDoesNotRetryAfterClientCancel(t *testing.T) {
+	c := newCanceledRetryTestContext()
+	err := &dto.TaskError{
+		Code:       "upstream_timeout",
+		Message:    "upstream timeout",
+		StatusCode: http.StatusGatewayTimeout,
+	}
+
+	require.False(t, shouldRetryTaskRelay(c, 1, err, 1))
 }
