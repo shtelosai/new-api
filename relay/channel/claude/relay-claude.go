@@ -786,11 +786,32 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 	return true
 }
 
+// tryParseClaudeGenericError 兜底解析非标准错误体（如 dashscope 风格 {"code":"...","message":"..."}）。
+// 这类响应的 message 是字符串，按 ClaudeResponse 反序列化必然失败；此处提取上游真实错误信息透传，
+// 避免用户只看到 "cannot unmarshal ... ClaudeMediaMessage" 的 500。仅在主解析失败后调用。
+func tryParseClaudeGenericError(data []byte) *types.NewAPIError {
+	var generic struct {
+		Code    any    `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	}
+	if err := common.Unmarshal(data, &generic); err != nil || generic.Message == "" {
+		return nil
+	}
+	message := generic.Message
+	if generic.Code != nil {
+		message = fmt.Sprintf("%s (upstream code: %v)", generic.Message, generic.Code)
+	}
+	return types.WithClaudeError(types.ClaudeError{Type: "upstream_error", Message: message}, http.StatusInternalServerError)
+}
+
 func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string) *types.NewAPIError {
 	var claudeResponse dto.ClaudeResponse
 	err := common.UnmarshalJsonStr(data, &claudeResponse)
 	if err != nil {
 		common.SysLog("error unmarshalling stream response: " + err.Error())
+		if genericErr := tryParseClaudeGenericError([]byte(data)); genericErr != nil {
+			return genericErr
+		}
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
@@ -902,6 +923,9 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	var claudeResponse dto.ClaudeResponse
 	err := common.Unmarshal(data, &claudeResponse)
 	if err != nil {
+		if genericErr := tryParseClaudeGenericError(data); genericErr != nil {
+			return genericErr
+		}
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
