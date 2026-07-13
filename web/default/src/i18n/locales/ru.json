@@ -730,6 +730,7 @@
     "Changes are written to the settings draft on save.": "Изменения будут записаны в черновик настроек при сохранении.",
     "Changing...": "Изменение...",
     "Channel": "Канал",
+    "Channel Consumption Ranking": "Рейтинг потребления по каналам",
     "Channel {{name}}": "Канал {{name}}",
     "Channel {{name}} model {{model}}": "Канал {{name}}, модель {{model}}",
     "Channel Affinity": "Привязка к каналу",

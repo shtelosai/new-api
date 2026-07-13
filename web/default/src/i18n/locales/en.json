@@ -730,6 +730,7 @@
     "Changes are written to the settings draft on save.": "Changes are written to the settings draft on save.",
     "Changing...": "Changing...",
     "Channel": "Channel",
+    "Channel Consumption Ranking": "Channel Consumption Ranking",
     "Channel {{name}}": "Channel {{name}}",
     "Channel {{name}} model {{model}}": "Channel {{name}} model {{model}}",
     "Channel Affinity": "Channel Affinity",

@@ -730,6 +730,7 @@
     "Changes are written to the settings draft on save.": "保存すると変更は設定ドラフトに書き込まれます。",
     "Changing...": "変更中...",
     "Channel": "チャネル",
+    "Channel Consumption Ranking": "チャネル消費ランキング",
     "Channel {{name}}": "チャネル {{name}}",
     "Channel {{name}} model {{model}}": "チャネル {{name}} モデル {{model}}",
     "Channel Affinity": "チャネルアフィニティ",

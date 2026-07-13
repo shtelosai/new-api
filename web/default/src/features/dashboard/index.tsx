@@ -77,6 +77,12 @@ const LazyConsumptionDistributionChart = lazy(() =>
   }))
 )
 
+const LazyChannelConsumptionChart = lazy(() =>
+  import('./components/models/channel-consumption-chart').then((m) => ({
+    default: m.ChannelConsumptionChart,
+  }))
+)
+
 const LazyPerformanceOverview = lazy(() =>
   import('./components/models/performance-overview').then((m) => ({
     default: m.PerformanceOverview,
@@ -348,7 +354,14 @@ export function Dashboard() {
                   />
                 </Suspense>
               </FadeIn>
-              <FadeIn delay={0.15}>
+              {isAdmin && (
+                <FadeIn delay={0.15}>
+                  <Suspense fallback={<ModelChartsFallback />}>
+                    <LazyChannelConsumptionChart />
+                  </Suspense>
+                </FadeIn>
+              )}
+              <FadeIn delay={0.2}>
                 <Suspense fallback={<ModelChartsFallback />}>
                   <LazyModelCharts
                     data={modelData}

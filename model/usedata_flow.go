@@ -146,6 +146,23 @@ func fillFlowChannelNames(rows []*FlowQuotaData) error {
 		return nil
 	}
 
+	channelNameByID, err := getChannelNamesByIDs(channelIDs)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if name := channelNameByID[row.ChannelID]; name != "" {
+			row.ChannelName = name
+			continue
+		}
+		if row.ChannelID > 0 {
+			row.ChannelName = fmt.Sprintf("channel-%d", row.ChannelID)
+		}
+	}
+	return nil
+}
+
+func getChannelNamesByIDs(channelIDs []int) (map[int]string, error) {
 	channelNameByID := make(map[int]string, len(channelIDs))
 	if common.MemoryCacheEnabled {
 		for _, channelID := range channelIDs {
@@ -159,20 +176,11 @@ func fillFlowChannelNames(rows []*FlowQuotaData) error {
 			Name string `gorm:"column:name"`
 		}
 		if err := DB.Table("channels").Select("id, name").Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
-			return err
+			return nil, err
 		}
 		for _, channel := range channels {
 			channelNameByID[channel.Id] = channel.Name
 		}
 	}
-	for _, row := range rows {
-		if name := channelNameByID[row.ChannelID]; name != "" {
-			row.ChannelName = name
-			continue
-		}
-		if row.ChannelID > 0 {
-			row.ChannelName = fmt.Sprintf("channel-%d", row.ChannelID)
-		}
-	}
-	return nil
+	return channelNameByID, nil
 }

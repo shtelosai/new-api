@@ -33,6 +33,12 @@ export interface QuotaDataItem {
   quota?: number
 }
 
+export interface ChannelConsumptionItem {
+  channel_id: number
+  channel_name: string
+  quota: number
+}
+
 export interface FlowQuotaDataItem {
   user_id?: number
   username?: string

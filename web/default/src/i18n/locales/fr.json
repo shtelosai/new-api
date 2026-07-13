@@ -730,6 +730,7 @@
     "Changes are written to the settings draft on save.": "Les modifications sont écrites dans le brouillon des paramètres lors de l’enregistrement.",
     "Changing...": "Modification en cours...",
     "Channel": "Canal",
+    "Channel Consumption Ranking": "Classement de consommation par canal",
     "Channel {{name}}": "Canal {{name}}",
     "Channel {{name}} model {{model}}": "Canal {{name}} modèle {{model}}",
     "Channel Affinity": "Affinité de canal",

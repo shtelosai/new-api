@@ -730,6 +730,7 @@
     "Changes are written to the settings draft on save.": "保存后会写入设置草稿。",
     "Changing...": "修改中...",
     "Channel": "渠道",
+    "Channel Consumption Ranking": "渠道消费排名",
     "Channel {{name}}": "渠道 {{name}}",
     "Channel {{name}} model {{model}}": "渠道 {{name}} 模型 {{model}}",
     "Channel Affinity": "渠道亲和性",

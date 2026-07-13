@@ -730,6 +730,7 @@
     "Changes are written to the settings draft on save.": "Các thay đổi sẽ được ghi vào bản nháp cài đặt khi lưu.",
     "Changing...": "Đang thay đổi...",
     "Channel": "Kênh",
+    "Channel Consumption Ranking": "Xếp hạng mức tiêu thụ theo kênh",
     "Channel {{name}}": "Kênh {{name}}",
     "Channel {{name}} model {{model}}": "Kênh {{name}} mô hình {{model}}",
     "Channel Affinity": "Ưu tiên kênh",
