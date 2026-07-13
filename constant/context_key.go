@@ -9,6 +9,7 @@ const (
 
 	ContextKeyOriginalModel    ContextKey = "original_model"
 	ContextKeyRequestStartTime ContextKey = "request_start_time"
+	ContextKeyConversationHash ContextKey = "conversation_hash"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
@@ -67,6 +68,10 @@ const (
 	// ContextKeyLanguage stores the user's language preference for i18n
 	ContextKeyLanguage ContextKey = "language"
 	ContextKeyIsStream ContextKey = "is_stream"
+
+	// Claude 流式响应提交前允许只发送 keepalive；只有真正业务事件写出后才视为已提交。
+	ContextKeyClaudeStreamGateActive ContextKey = "claude_stream_gate_active"
+	ContextKeyClaudeStreamCommitted  ContextKey = "claude_stream_committed"
 
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit

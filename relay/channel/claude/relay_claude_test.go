@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -382,6 +383,11 @@ func TestRequestOpenAI2ClaudeMessage_ClaudeOpus48ThinkingUsesAdaptiveHighEffort(
 }
 
 func newClaudeStreamTestContext(t *testing.T) *gin.Context {
+	c, _ := newClaudeStreamTestContextWithRecorder(t)
+	return c
+}
+
+func newClaudeStreamTestContextWithRecorder(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	originStreamingTimeout := constant.StreamingTimeout
 	constant.StreamingTimeout = 300
@@ -393,7 +399,7 @@ func newClaudeStreamTestContext(t *testing.T) *gin.Context {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	return c
+	return c, w
 }
 
 func newClaudeStreamResponse(body string) *http.Response {
@@ -424,7 +430,7 @@ func TestClaudeStreamHandlerEmptyStreamReturnsEmptyResponseBeforeWrite(t *testin
 	require.Equal(t, types.ErrorCodeEmptyResponse, err.GetErrorCode())
 }
 
-func TestClaudeStreamHandlerEmptyStreamKeepsSuccessAfterWrite(t *testing.T) {
+func TestClaudeStreamHandlerEmptyStreamAfterKeepaliveReturnsEmptyResponse(t *testing.T) {
 	c := newClaudeStreamTestContext(t)
 	_, writeErr := c.Writer.Write([]byte(":"))
 	require.NoError(t, writeErr)
@@ -432,8 +438,171 @@ func TestClaudeStreamHandlerEmptyStreamKeepsSuccessAfterWrite(t *testing.T) {
 
 	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(""), newClaudeStreamRelayInfo())
 
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCodeEmptyResponse, err.GetErrorCode())
+}
+
+func TestClaudeStreamHandlerExplicitZeroUsageWithoutOutputReturnsError(t *testing.T) {
+	c := newClaudeStreamTestContext(t)
+	body := `data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}` + "\n\n"
+	info := newClaudeStreamRelayInfo()
+	info.SetEstimatePromptTokens(406123)
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), info)
+
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCodeEmptyResponse, err.GetErrorCode())
+	require.False(t, c.Writer.Written())
+}
+
+func TestClaudeStreamHandlerPositiveInputZeroOutputCompletesSuccessfully(t *testing.T) {
+	c := newClaudeStreamTestContext(t)
+	body := `data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":3,"output_tokens":0}}` + "\n\n"
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), newClaudeStreamRelayInfo())
+
 	require.Nil(t, err)
 	require.NotNil(t, usage)
+	require.Equal(t, 3, usage.PromptTokens)
+	require.Equal(t, 0, usage.CompletionTokens)
+}
+
+func TestClaudeStreamHandlerToolUseWithZeroUsageCompletesSuccessfully(t *testing.T) {
+	c := newClaudeStreamTestContext(t)
+	body := `data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"tool_1","name":"read_file","input":{}}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":0,"output_tokens":0}}` + "\n\n"
+	info := newClaudeStreamRelayInfo()
+	info.SetEstimatePromptTokens(100)
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), info)
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 100, usage.PromptTokens)
+}
+
+func TestClaudeStreamHandlerServerToolResultWithZeroUsageCompletesSuccessfully(t *testing.T) {
+	c := newClaudeStreamTestContext(t)
+	body := `data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"content_block_start","content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","title":"result"}]}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}` + "\n\n"
+	info := newClaudeStreamRelayInfo()
+	info.SetEstimatePromptTokens(100)
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), info)
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 100, usage.PromptTokens)
+}
+
+func TestClaudeStreamHandlerFlushesBufferedEventsInOrder(t *testing.T) {
+	c, w := newClaudeStreamTestContextWithRecorder(t)
+	body := `data: {"type":"message_start","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}` + "\n\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+	info := newClaudeStreamRelayInfo()
+	info.SetEstimatePromptTokens(100)
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), info)
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted))
+	output := w.Body.String()
+	messageStart := strings.Index(output, "event: message_start")
+	contentStart := strings.Index(output, "event: content_block_start")
+	contentDelta := strings.Index(output, "event: content_block_delta")
+	messageDelta := strings.Index(output, "event: message_delta")
+	require.GreaterOrEqual(t, messageStart, 0)
+	require.Greater(t, contentStart, messageStart)
+	require.Greater(t, contentDelta, contentStart)
+	require.Greater(t, messageDelta, contentDelta)
+	require.Equal(t, 1, strings.Count(output, "event: message_start"))
+	require.Equal(t, 1, strings.Count(output, "event: content_block_delta"))
+}
+
+func TestClaudeStreamHandlerOpenAIFormatKeepsZeroUsageEventsBuffered(t *testing.T) {
+	c, w := newClaudeStreamTestContextWithRecorder(t)
+	body := `data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}` + "\n\n"
+	info := newClaudeStreamRelayInfo()
+	info.RelayFormat = types.RelayFormatOpenAI
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), info)
+
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCodeEmptyResponse, err.GetErrorCode())
+	require.False(t, c.Writer.Written())
+	require.Empty(t, w.Body.String())
+}
+
+func TestClaudeStreamHandlerOpenAIFormatFlushesAfterSemanticOutput(t *testing.T) {
+	c, w := newClaudeStreamTestContextWithRecorder(t)
+	body := `data: {"type":"message_start","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}` + "\n\n"
+	info := newClaudeStreamRelayInfo()
+	info.RelayFormat = types.RelayFormatOpenAI
+	info.SetEstimatePromptTokens(100)
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), info)
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted))
+	require.Equal(t, 1, strings.Count(w.Body.String(), `"content":"Hello"`))
+	require.Contains(t, w.Body.String(), "data: [DONE]")
+}
+
+func TestClaudeStreamHandlerFallbackMarkerDoesNotCommitZeroUsageStream(t *testing.T) {
+	c, w := newClaudeStreamTestContextWithRecorder(t)
+	body := `data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"content_block_start","content_block":{"type":"fallback"}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}` + "\n\n"
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), newClaudeStreamRelayInfo())
+
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCodeEmptyResponse, err.GetErrorCode())
+	require.False(t, c.Writer.Written())
+	require.Empty(t, w.Body.String())
+}
+
+func TestClaudeStreamHandlerDiscardedRefusalDoesNotLeakRejectReason(t *testing.T) {
+	c := newClaudeStreamTestContext(t)
+	body := `data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"input_tokens":0,"output_tokens":0}}` + "\n\n"
+
+	usage, err := ClaudeStreamHandler(c, newClaudeStreamResponse(body), newClaudeStreamRelayInfo())
+
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCodeEmptyResponse, err.GetErrorCode())
+	require.Empty(t, common.GetContextKeyString(c, constant.ContextKeyAdminRejectReason))
+}
+
+func TestFormatClaudeResponseInfo_UnknownContentBlockIsSemanticOutput(t *testing.T) {
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+	response := &dto.ClaudeResponse{
+		Type: "content_block_start",
+		ContentBlock: &dto.ClaudeMediaMessage{
+			Type:    "future_output",
+			Content: map[string]any{"value": "kept"},
+		},
+	}
+
+	require.True(t, FormatClaudeResponseInfo(response, nil, claudeInfo))
+	require.True(t, claudeInfo.HasSemanticOutput)
 }
 
 func TestClaudeStreamHandlerMessageDeltaCompletesSuccessfully(t *testing.T) {

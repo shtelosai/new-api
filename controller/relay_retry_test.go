@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -142,6 +144,59 @@ func TestShouldRetryRetriesEmptyResponseBeforeWrite(t *testing.T) {
 	err := types.NewError(errors.New("upstream stream ended without any content"), types.ErrorCodeEmptyResponse)
 
 	require.True(t, shouldRetry(c, err, 1))
+}
+
+func TestShouldRetryRetriesClaudeEmptyResponseAfterKeepalive(t *testing.T) {
+	c := newRetryTestContext()
+	_, writeErr := c.Writer.Write([]byte(": PING\n\n"))
+	require.NoError(t, writeErr)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamGateActive, true)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, false)
+	err := types.NewError(errors.New("upstream stream ended with zero usage and no output"), types.ErrorCodeEmptyResponse)
+
+	require.True(t, shouldRetry(c, err, 1))
+}
+
+func TestShouldRetryDoesNotRetryClaudeErrorAfterSemanticCommit(t *testing.T) {
+	c := newRetryTestContext()
+	_, writeErr := c.Writer.Write([]byte("data: partial\n\n"))
+	require.NoError(t, writeErr)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamGateActive, true)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, true)
+	err := types.NewError(errors.New("upstream stream failed after output"), types.ErrorCodeEmptyResponse)
+
+	require.False(t, shouldRetry(c, err, 1))
+}
+
+func TestRelayWritesClaudeStreamErrorAfterKeepalive(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	_, writeErr := c.Writer.Write([]byte(": PING\n\n"))
+	require.NoError(t, writeErr)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamGateActive, true)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, false)
+
+	Relay(c, types.RelayFormatClaude)
+
+	require.Contains(t, w.Body.String(), "event: error\n")
+	require.Contains(t, w.Body.String(), "data: {\"type\":\"error\"")
+	require.NotContains(t, w.Body.String(), "\n{\"error\":")
+}
+
+func TestRelayWritesOpenAIStreamErrorAfterKeepalive(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	_, writeErr := c.Writer.Write([]byte(": PING\n\n"))
+	require.NoError(t, writeErr)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamGateActive, true)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, false)
+
+	Relay(c, types.RelayFormatOpenAI)
+
+	require.Contains(t, w.Body.String(), "data: {\"error\":")
+	require.NotContains(t, w.Body.String(), "\n{\"error\":")
 }
 
 func TestShouldRetryDoesNotRetryAfterClientCancel(t *testing.T) {

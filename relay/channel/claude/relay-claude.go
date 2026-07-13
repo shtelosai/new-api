@@ -585,12 +585,14 @@ func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.OpenAITextRe
 }
 
 type ClaudeResponseInfo struct {
-	ResponseId   string
-	Created      int64
-	Model        string
-	ResponseText strings.Builder
-	Usage        *dto.Usage
-	Done         bool
+	ResponseId        string
+	Created           int64
+	Model             string
+	ResponseText      strings.Builder
+	Usage             *dto.Usage
+	UsageReported     bool
+	HasSemanticOutput bool
+	Done              bool
 }
 
 func cacheCreationTokensForOpenAIUsage(usage *dto.Usage) int {
@@ -605,6 +607,15 @@ func cacheCreationTokensForOpenAIUsage(usage *dto.Usage) int {
 		return usage.PromptTokensDetails.CachedCreationTokens
 	}
 	return splitCacheCreationTokens
+}
+
+func hasBillableClaudeUsage(usage *dto.Usage) bool {
+	if usage == nil {
+		return false
+	}
+	return usage.PromptTokens > 0 || usage.CompletionTokens > 0 ||
+		usage.PromptTokensDetails.CachedTokens > 0 || usage.PromptTokensDetails.CachedCreationTokens > 0 ||
+		usage.ClaudeCacheCreation5mTokens > 0 || usage.ClaudeCacheCreation1hTokens > 0
 }
 
 func buildOpenAIStyleUsageFromClaudeUsage(usage *dto.Usage) dto.Usage {
@@ -729,6 +740,7 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 
 		// message_start, 获取usage
 		if claudeResponse.Message != nil && claudeResponse.Message.Usage != nil {
+			claudeInfo.UsageReported = true
 			claudeInfo.Usage.PromptTokens = claudeResponse.Message.Usage.InputTokens
 			claudeInfo.Usage.UsageSemantic = "anthropic"
 			claudeInfo.Usage.PromptTokensDetails.CachedTokens = claudeResponse.Message.Usage.CacheReadInputTokens
@@ -741,14 +753,25 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 		if claudeResponse.Delta != nil {
 			if claudeResponse.Delta.Text != nil {
 				claudeInfo.ResponseText.WriteString(*claudeResponse.Delta.Text)
+				claudeInfo.HasSemanticOutput = claudeInfo.HasSemanticOutput || *claudeResponse.Delta.Text != ""
 			}
 			if claudeResponse.Delta.Thinking != nil {
 				claudeInfo.ResponseText.WriteString(*claudeResponse.Delta.Thinking)
+				claudeInfo.HasSemanticOutput = claudeInfo.HasSemanticOutput || *claudeResponse.Delta.Thinking != ""
+			}
+			claudeInfo.HasSemanticOutput = claudeInfo.HasSemanticOutput || (claudeResponse.Delta.PartialJson != nil && *claudeResponse.Delta.PartialJson != "")
+			if claudeResponse.Delta.Type != "" &&
+				claudeResponse.Delta.Type != "text_delta" &&
+				claudeResponse.Delta.Type != "thinking_delta" &&
+				claudeResponse.Delta.Type != "input_json_delta" &&
+				claudeResponse.Delta.Type != "signature_delta" {
+				claudeInfo.HasSemanticOutput = true
 			}
 		}
 	} else if claudeResponse.Type == "message_delta" {
 		// 最终的usage获取
 		if claudeResponse.Usage != nil {
+			claudeInfo.UsageReported = true
 			claudeInfo.Usage.UsageSemantic = "anthropic"
 			if claudeResponse.Usage.InputTokens > 0 {
 				// 不叠加，只取最新的
@@ -775,6 +798,19 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 		// 判断是否完整
 		claudeInfo.Done = true
 	} else if claudeResponse.Type == "content_block_start" {
+		if claudeResponse.ContentBlock != nil {
+			switch claudeResponse.ContentBlock.Type {
+			case "text":
+				claudeInfo.HasSemanticOutput = claudeInfo.HasSemanticOutput || claudeResponse.ContentBlock.GetText() != ""
+			case "thinking":
+				claudeInfo.HasSemanticOutput = claudeInfo.HasSemanticOutput || (claudeResponse.ContentBlock.Thinking != nil && *claudeResponse.ContentBlock.Thinking != "")
+			case "fallback", "":
+				// fallback 是模型切换标记，空类型不是有效内容。
+			default:
+				// 工具调用、服务端工具结果、redacted thinking 与未来新增内容块都应视为有效输出。
+				claudeInfo.HasSemanticOutput = true
+			}
+		}
 	} else {
 		return false
 	}
@@ -804,19 +840,35 @@ func tryParseClaudeGenericError(data []byte) *types.NewAPIError {
 	return types.WithClaudeError(types.ClaudeError{Type: "upstream_error", Message: message}, http.StatusInternalServerError)
 }
 
-func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string) *types.NewAPIError {
+type claudeStreamEvent struct {
+	response  dto.ClaudeResponse
+	data      string
+	formatted bool
+}
+
+func parseClaudeStreamEvent(data string) (*claudeStreamEvent, *types.NewAPIError) {
 	var claudeResponse dto.ClaudeResponse
-	err := common.UnmarshalJsonStr(data, &claudeResponse)
-	if err != nil {
+	if err := common.UnmarshalJsonStr(data, &claudeResponse); err != nil {
 		common.SysLog("error unmarshalling stream response: " + err.Error())
 		if genericErr := tryParseClaudeGenericError([]byte(data)); genericErr != nil {
-			return genericErr
+			return nil, genericErr
 		}
-		return types.NewError(err, types.ErrorCodeBadResponseBody)
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
-		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
+		return nil, types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
+	return &claudeStreamEvent{response: claudeResponse, data: data}, nil
+}
+
+func observeClaudeStreamEvent(claudeInfo *ClaudeResponseInfo, event *claudeStreamEvent) {
+	claudeResponse := &event.response
+	event.formatted = FormatClaudeResponseInfo(claudeResponse, nil, claudeInfo)
+}
+
+func emitClaudeStreamEvent(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, event *claudeStreamEvent) {
+	claudeResponse := &event.response
+	data := event.data
 	if claudeResponse.StopReason != "" {
 		maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
 	}
@@ -824,33 +876,41 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		maybeMarkClaudeRefusal(c, *claudeResponse.Delta.StopReason)
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
-		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
-
-		if claudeResponse.Type == "message_start" {
-			// message_start, 获取usage
-			if claudeResponse.Message != nil {
-				info.UpstreamModelName = claudeResponse.Message.Model
-			}
-		} else if claudeResponse.Type == "message_delta" {
+		if claudeResponse.Type == "message_start" && claudeResponse.Message != nil {
+			info.UpstreamModelName = claudeResponse.Message.Model
+		}
+		if claudeResponse.Type == "message_delta" {
 			// 确保 message_delta 的 usage 包含完整的 input_tokens 和 cache 相关字段
 			// 解决 AWS Bedrock 等上游返回的 message_delta 缺少这些字段的问题
 			if !shouldSkipClaudeMessageDeltaUsagePatch(info) {
-				data = patchClaudeMessageDeltaUsageData(data, buildMessageDeltaPatchUsage(&claudeResponse, claudeInfo))
+				data = patchClaudeMessageDeltaUsageData(data, buildMessageDeltaPatchUsage(claudeResponse, claudeInfo))
 			}
 		}
-		helper.ClaudeChunkData(c, claudeResponse, data)
+		helper.ClaudeChunkData(c, *claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
-		response := StreamResponseClaude2OpenAI(&claudeResponse)
-
-		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {
-			return nil
+		if !event.formatted {
+			return
 		}
-
-		err = helper.ObjectData(c, response)
-		if err != nil {
+		response := StreamResponseClaude2OpenAI(claudeResponse)
+		if response == nil {
+			return
+		}
+		response.Id = claudeInfo.ResponseId
+		response.Created = claudeInfo.Created
+		response.Model = claudeInfo.Model
+		if err := helper.ObjectData(c, response); err != nil {
 			logger.LogError(c, "send_stream_response_failed: "+err.Error())
 		}
 	}
+}
+
+func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string) *types.NewAPIError {
+	event, err := parseClaudeStreamEvent(data)
+	if err != nil {
+		return err
+	}
+	observeClaudeStreamEvent(claudeInfo, event)
+	emitClaudeStreamEvent(c, info, claudeInfo, event)
 	return nil
 }
 
@@ -900,18 +960,44 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		ResponseText: strings.Builder{},
 		Usage:        &dto.Usage{},
 	}
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamGateActive, true)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, false)
+
+	committed := false
+	pending := make([]*claudeStreamEvent, 0, 4)
 	var err *types.NewAPIError
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-		err = HandleStreamResponseData(c, info, claudeInfo, data)
+		var event *claudeStreamEvent
+		event, err = parseClaudeStreamEvent(data)
 		if err != nil {
 			sr.Stop(err)
+			return
+		}
+
+		observeClaudeStreamEvent(claudeInfo, event)
+		if committed {
+			emitClaudeStreamEvent(c, info, claudeInfo, event)
+			return
+		}
+
+		pending = append(pending, event)
+		if hasBillableClaudeUsage(claudeInfo.Usage) || claudeInfo.HasSemanticOutput {
+			committed = true
+			common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, true)
+			for _, pendingEvent := range pending {
+				emitClaudeStreamEvent(c, info, claudeInfo, pendingEvent)
+			}
+			pending = nil
 		}
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	if !claudeInfo.Done && claudeInfo.ResponseText.Len() == 0 && claudeInfo.Usage.CompletionTokens == 0 && (c == nil || c.Writer == nil || !c.Writer.Written()) {
+	if !committed {
+		if claudeInfo.UsageReported {
+			return nil, types.NewError(errors.New("upstream stream ended with zero usage and no output"), types.ErrorCodeEmptyResponse)
+		}
 		return nil, types.NewError(errors.New("upstream stream ended without any content"), types.ErrorCodeEmptyResponse)
 	}
 

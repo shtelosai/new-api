@@ -65,6 +65,40 @@ func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewA
 	return err
 }
 
+func claudeStreamGateActive(c *gin.Context) bool {
+	return common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamGateActive)
+}
+
+func writeRelayError(c *gin.Context, relayFormat types.RelayFormat, newAPIError *types.NewAPIError) {
+	if c.Writer.Written() && claudeStreamGateActive(c) {
+		if relayFormat == types.RelayFormatClaude {
+			err := helper.ClaudeData(c, dto.ClaudeResponse{
+				Type:  "error",
+				Error: newAPIError.ToClaudeError(),
+			})
+			if err != nil {
+				logger.LogError(c, "send claude stream error failed: "+err.Error())
+			}
+			return
+		}
+		if err := helper.ObjectData(c, gin.H{"error": newAPIError.ToOpenAIError()}); err != nil {
+			logger.LogError(c, "send openai stream error failed: "+err.Error())
+		}
+		return
+	}
+
+	if relayFormat == types.RelayFormatClaude {
+		c.JSON(newAPIError.StatusCode, gin.H{
+			"type":  "error",
+			"error": newAPIError.ToClaudeError(),
+		})
+		return
+	}
+	c.JSON(newAPIError.StatusCode, gin.H{
+		"error": newAPIError.ToOpenAIError(),
+	})
+}
+
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	requestId := c.GetString(common.RequestIdKey)
@@ -94,18 +128,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
-			switch relayFormat {
-			case types.RelayFormatOpenAIRealtime:
+			if relayFormat == types.RelayFormatOpenAIRealtime {
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
-			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"type":  "error",
-					"error": newAPIError.ToClaudeError(),
-				})
-			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"error": newAPIError.ToOpenAIError(),
-				})
+			} else {
+				writeRelayError(c, relayFormat, newAPIError)
 			}
 		}
 	}()
@@ -342,7 +368,8 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if relayRequestContextDone(c) {
 		return false
 	}
-	if c != nil && c.Writer != nil && c.Writer.Written() {
+	if c != nil && c.Writer != nil && c.Writer.Written() &&
+		!(claudeStreamGateActive(c) && !common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted)) {
 		return false
 	}
 	if openaiErr == nil {

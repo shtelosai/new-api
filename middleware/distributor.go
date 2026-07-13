@@ -228,6 +228,7 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	if !gjson.ValidBytes(requestBody) {
 		return nil, errors.New("invalid JSON request body")
 	}
+	captureConversationHash(c, requestBody)
 
 	values := gjson.GetManyBytes(requestBody, "model", "group")
 	model, err := getJSONStringValue(values[0], "model")
