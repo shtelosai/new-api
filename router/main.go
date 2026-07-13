@@ -13,6 +13,7 @@ import (
 )
 
 func SetRouter(router *gin.Engine, assets ThemeAssets) {
+	router.GET("/internal/metrics", middleware.MetricsHandler())
 	SetApiRouter(router)
 	SetDashboardRouter(router)
 	SetRelayRouter(router)
