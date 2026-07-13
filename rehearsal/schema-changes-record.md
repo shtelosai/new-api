@@ -84,3 +84,13 @@ ALTER TABLE tokens MODIFY COLUMN `key` varchar(128) COLLATE utf8mb4_general_ci D
   - 生产现状 vs 演练 schema_after 归一化对比：**除故意没建的冗余 tokens.`key` 唯一索引外，0 差异**
 - 结论：生产 schema = 已测通过的目标结构，**可用 SKIP_AUTO_MIGRATE=true 启动新版，不会因缺列/缺表运行时报错**
 - 快照留存：rehearsal/schema_prod_after.sql
+
+---
+
+## 附四：生产切换已完成（2026-07-10 01:10）
+- 生产库 DDL 已执行核对通过；shtelosai/new-api main = 9c56dd63（迁移版）
+- 服务器 `ssh twork` 切换：备份老镜像 → fresh clone 构建 `new-api:twork-v1rc20`（双前端）→ compose 切镜像 + `.env.shtlcloud` 加 SKIP_AUTO_MIGRATE=true → 停老容器/刷 redis DB0/起新版
+- 结果：`/api/status` 4s 健康，日志确认 `migration skipped` + `ready in 423ms`；**实际停机 ~4-6s，tbackend 全程未停**
+- 验证：新版身份确认（SKIP_AUTO_MIGRATE 日志为新代码独有）、tbackend active+200、真实请求已落库、无用户请求错误（仅渠道巡检噪音）
+- **回滚**：`ssh twork /www/twork/new-api/ROLLBACK.sh`（一键，恢复 .precutover 配置 + 老镜像 twork-source，几秒回到老 fork；DB additive 无需还原）
+- 备份位置：/www/twork/backups/newapi-cutover-20260710-003633；老镜像 new-api:twork-source(5762ce5048dc) + twork-oldfork-rollback-20260710-003633

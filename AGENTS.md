@@ -94,8 +94,10 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - When implementing a new channel, confirm whether the provider supports `StreamOptions`; if supported, add the channel to `streamSupportedChannels`.
 - Outbound relay HTTP requests and WebSocket handshakes must inherit the incoming request context. Once the client context ends, stop retries and do not treat the cancellation as a channel/model-health or performance failure; genuine upstream empty responses remain retryable while the client is active.
 - Ordinary relay retries must exclude every channel that already failed in the current request, keep selecting the highest-priority remaining tier, and stop when no untried channel remains; exhaustion must preserve the last upstream error instead of replacing it with a channel-selection error. Task relay keeps its existing retry behavior.
+- Claude streams must distinguish keepalive writes from semantic response commitment: buffer initial control events until positive usage or meaningful output appears, allow empty-response retries while only keepalives were sent, and use SSE-framed terminal errors instead of appending raw JSON after stream headers are committed.
 - Relay-triggered model disable must atomically persist the `relay` disabled row and failure-threshold health state; readers must never observe a disabled row with stale failure counters.
 - Upstream request ID capture prefers `X-Oneapi-Request-Id` and falls back to LiteLLM's `X-Litellm-Call-Id` without changing the existing `logs.upstream_request_id` contract.
+- Relay consume/error logs persist a 32-character HMAC `conversation_hash` derived from the Claude Code session ID; never store the raw session ID or request body. User log responses must strip this admin-only field, and `SKIP_AUTO_MIGRATE=true` deployments must apply the dated manual logs DDL before publishing code that writes it.
 - For request structs parsed from client JSON and re-marshaled to upstream providers, optional scalar fields MUST use pointer types with `omitempty` (for example, `*int`, `*uint`, `*float64`, `*bool`).
 - Preserve explicit zero values in upstream relay request DTOs: absent client JSON fields must become `nil` and be omitted, while explicit `0`, `0.0`, or `false` values must remain non-`nil` and be sent upstream.
 - Avoid non-pointer scalars with `omitempty` for optional request parameters, because zero values will be silently dropped during marshal.
@@ -137,6 +139,7 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 
 ### Frontend Rules
 
+- The admin channel consumption chart uses `GET /api/data/channels`, which aggregates persisted `quota_data` by channel across models. Its local-natural-day filters (today / 7 days / 30 days / custom date) stay independent from the shared dashboard filters; do not replace it with the fine-grained `/api/data/flow` payload.
 - Use `bun` as the preferred package manager and script runner for the frontend (`web/default/`):
   - `bun install` for dependency installation
   - `bun run dev` for development server
