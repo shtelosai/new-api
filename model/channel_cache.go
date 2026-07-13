@@ -174,10 +174,14 @@ func SyncChannelCache(frequency int) {
 }
 
 func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string, tokenId int) (*Channel, error) {
+	return GetRandomSatisfiedChannelExcluding(group, model, retry, requestPath, tokenId, nil)
+}
+
+func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, requestPath string, tokenId int, excludedChannelIds map[int]struct{}) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	// 注意：非缓存模式下 token_model_channels 过滤不生效，生产环境应启用 MemoryCache。
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, requestPath)
+		return GetChannelExcluding(group, model, retry, requestPath, excludedChannelIds)
 	}
 
 	channelSyncLock.RLock()
@@ -199,6 +203,18 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	channels = FilterChannelsByToken(channels, tokenId, model)
 	if len(channels) == 0 {
 		return nil, nil
+	}
+	if len(excludedChannelIds) > 0 {
+		filtered := make([]int, 0, len(channels))
+		for _, channelId := range channels {
+			if _, excluded := excludedChannelIds[channelId]; !excluded {
+				filtered = append(filtered, channelId)
+			}
+		}
+		channels = filtered
+		if len(channels) == 0 {
+			return nil, nil
+		}
 	}
 
 	if len(channels) == 1 {
@@ -222,7 +238,9 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(sortedUniquePriorities)))
 
-	if retry >= len(uniquePriorities) {
+	if len(excludedChannelIds) > 0 {
+		retry = 0
+	} else if retry >= len(uniquePriorities) {
 		retry = len(uniquePriorities) - 1
 	}
 	targetPriority := int64(sortedUniquePriorities[retry])

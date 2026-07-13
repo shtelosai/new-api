@@ -113,12 +113,28 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 }
 
 func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+	return GetChannelExcluding(group, model, retry, requestPath, nil)
+}
+
+func GetChannelExcluding(group string, model string, retry int, requestPath string, excludedChannelIds map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry)
-	if err != nil {
-		return nil, err
+	var channelQuery *gorm.DB
+	if len(excludedChannelIds) == 0 {
+		channelQuery, err = getChannelQuery(group, model, retry)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		excludedIds := make([]int, 0, len(excludedChannelIds))
+		for channelId := range excludedChannelIds {
+			excludedIds = append(excludedIds, channelId)
+		}
+		channelQuery = excludeDisabledChannelModels(DB.Where(
+			commonGroupCol+" = ? and model = ? and enabled = ? and channel_id NOT IN ?",
+			group, model, true, excludedIds,
+		))
 	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) || common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
 		err = channelQuery.Order("weight DESC").Find(&abilities).Error
@@ -129,6 +145,29 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPath(abilities, requestPath)
+	if len(excludedChannelIds) > 0 && len(abilities) > 0 {
+		var maxPriority int64
+		for i, ability := range abilities {
+			priority := int64(0)
+			if ability.Priority != nil {
+				priority = *ability.Priority
+			}
+			if i == 0 || priority > maxPriority {
+				maxPriority = priority
+			}
+		}
+		filtered := make([]Ability, 0, len(abilities))
+		for _, ability := range abilities {
+			priority := int64(0)
+			if ability.Priority != nil {
+				priority = *ability.Priority
+			}
+			if priority == maxPriority {
+				filtered = append(filtered, ability)
+			}
+		}
+		abilities = filtered
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
