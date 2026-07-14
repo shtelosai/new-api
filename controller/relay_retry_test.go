@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,6 +43,37 @@ type relayRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f relayRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func gatheredCounterValue(t *testing.T, metricName string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != metricName {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			matched := true
+			for labelName, labelValue := range labels {
+				found := false
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == labelName && label.GetValue() == labelValue {
+						found = true
+						break
+					}
+				}
+				if !found {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return metric.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
 }
 
 func withRetryStatusRanges(t *testing.T, ranges []operation_setting.StatusCodeRange) {
@@ -231,16 +263,24 @@ func TestRelayMarksSuccessfulClaudeRequest(t *testing.T) {
 	t.Cleanup(func() { httpClient.Transport = originalTransport })
 
 	originalLogConsumeEnabled := common.LogConsumeEnabled
+	originalRedisEnabled := common.RedisEnabled
 	quotaSetting := operation_setting.GetQuotaSetting()
 	originalQuotaSetting := *quotaSetting
+	healthSetting := operation_setting.GetChannelHealthSetting()
+	originalHealthSetting := *healthSetting
 	originalModelRatios, err := common.Marshal(ratio_setting.GetModelRatioCopy())
 	require.NoError(t, err)
 	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"claude-relay-success-test":0}`))
 	common.LogConsumeEnabled = false
+	common.RedisEnabled = false
 	quotaSetting.EnableFreeModelPreConsume = false
+	healthSetting.SoftFailureCooldownEnabled = true
+	healthSetting.SoftFailureCooldownSeconds = 30
 	t.Cleanup(func() {
 		common.LogConsumeEnabled = originalLogConsumeEnabled
+		common.RedisEnabled = originalRedisEnabled
 		*quotaSetting = originalQuotaSetting
+		*healthSetting = originalHealthSetting
 		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(string(originalModelRatios)))
 	})
 
@@ -258,12 +298,15 @@ func TestRelayMarksSuccessfulClaudeRequest(t *testing.T) {
 	common.SetContextKey(c, constant.ContextKeyChannelKey, "sk-test")
 	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://claude.test")
 	common.SetContextKey(c, constant.ContextKeyChannelRatio, float64(0))
+	service.RecordChannelSoftCooldown(c, 9510, "claude-prior-soft-failure", 529, "overloaded_error")
+	outcomeBefore := gatheredCounterValue(t, "newapi_channel_soft_failover_total", map[string]string{"outcome": service.SoftFailoverOutcomeSameRequestSuccess})
 
 	Relay(c, types.RelayFormatClaude)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), `"id":"msg_test"`)
 	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyClaudeRelaySucceeded))
+	require.Equal(t, outcomeBefore+1, gatheredCounterValue(t, "newapi_channel_soft_failover_total", map[string]string{"outcome": service.SoftFailoverOutcomeSameRequestSuccess}))
 }
 
 func TestShouldRetryDoesNotRetryAfterClientCancel(t *testing.T) {
@@ -328,6 +371,43 @@ func TestRelayAttemptLimitOnlyExpandsClaudeWhenSoftCooldownEnabled(t *testing.T)
 	require.Equal(t, 7, relayAttemptLimit(c, types.RelayFormatClaude), "开启冷却后不能缩小既有真实请求预算")
 }
 
+func TestRecordChannelSoftFailoverTerminalOutcomeMapsRelayState(t *testing.T) {
+	healthSetting := operation_setting.GetChannelHealthSetting()
+	originalSetting := *healthSetting
+	originalRedisEnabled := common.RedisEnabled
+	healthSetting.SoftFailureCooldownEnabled = true
+	healthSetting.SoftFailureCooldownSeconds = 30
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		*healthSetting = originalSetting
+		common.RedisEnabled = originalRedisEnabled
+	})
+
+	tests := []struct {
+		name      string
+		succeeded bool
+		committed bool
+		outcome   string
+	}{
+		{name: "same request success", succeeded: true, outcome: service.SoftFailoverOutcomeSameRequestSuccess},
+		{name: "deferred after commit", committed: true, outcome: service.SoftFailoverOutcomeDeferredAfterCommit},
+		{name: "exhausted", outcome: service.SoftFailoverOutcomeExhausted},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newRetryTestContext()
+			service.RecordChannelSoftCooldown(ctx, 9350+i, fmt.Sprintf("claude-outcome-%d", i), 529, "overloaded_error")
+			common.SetContextKey(ctx, constant.ContextKeyClaudeStreamCommitted, tt.committed)
+			before := gatheredCounterValue(t, "newapi_channel_soft_failover_total", map[string]string{"outcome": tt.outcome})
+
+			recordChannelSoftFailoverTerminalOutcome(ctx, tt.succeeded)
+
+			require.Equal(t, before+1, gatheredCounterValue(t, "newapi_channel_soft_failover_total", map[string]string{"outcome": tt.outcome}))
+		})
+	}
+}
+
 func TestRecordChannelSoftCooldownForRelayHonorsRoutingBoundaries(t *testing.T) {
 	healthSetting := operation_setting.GetChannelHealthSetting()
 	originalSetting := *healthSetting
@@ -388,7 +468,7 @@ func TestRecordChannelSoftCooldownForRelayHonorsRoutingBoundaries(t *testing.T) 
 			recordChannelSoftCooldownForRelay(c, tt.relayFormat, tt.info, channelID, modelName, tt.err)
 
 			healthSetting.SoftFailureCooldownEnabled = true
-			entry, cooling := service.GetChannelSoftCooldown(channelID, modelName)
+			entry, cooling := service.GetChannelSoftCooldown(c, channelID, modelName)
 			require.Equal(t, tt.wantCooling, cooling)
 			if tt.wantCooling {
 				require.Equal(t, "rate_limit_error", entry.ErrorClass)

@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -111,13 +112,15 @@ func getRandomSatisfiedChannelSkippingSoftCooldown(param *RetryParam, group stri
 			return channel, localExcludedChannelIds, earliestExpiresAt, err
 		}
 
-		entry, cooling := GetChannelSoftCooldown(channel.Id, param.ModelName)
+		entry, cooling := GetChannelSoftCooldown(param.Ctx, channel.Id, param.ModelName)
 		if !cooling {
 			return channel, localExcludedChannelIds, earliestExpiresAt, nil
 		}
 		if earliestExpiresAt.IsZero() || entry.ExpiresAt.Before(earliestExpiresAt) {
 			earliestExpiresAt = entry.ExpiresAt
 		}
+		recordSoftCooldownSkippedChannelForLog(param.Ctx, channel.Id)
+		channelSoftCooldownSkipped.WithLabelValues(strconv.Itoa(channel.Id)).Inc()
 		if !copiedExclusions {
 			localExcludedChannelIds = make(map[int]struct{}, len(excludedChannelIds)+1)
 			for channelID := range excludedChannelIds {
@@ -260,6 +263,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		}
 	}
 	if channel == nil && !earliestCooldownExpiry.IsZero() {
+		RecordChannelSoftFailoverOutcome(param.Ctx, SoftFailoverOutcomeAllCooling)
 		return nil, selectGroup, &AllChannelsCoolingError{earliestExpiresAt: earliestCooldownExpiry}
 	}
 	if channel == nil && param.HasExcludedChannels() {

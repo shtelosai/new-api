@@ -103,8 +103,9 @@ func seedAffinityChannel(t *testing.T, modelName string, usingGroup string, affi
 }
 
 type distributedChannelPayload struct {
-	ChannelID int  `json:"channel_id"`
-	SkipRetry bool `json:"skip_retry"`
+	ChannelID    int                    `json:"channel_id"`
+	SkipRetry    bool                   `json:"skip_retry"`
+	SoftCooldown map[string]interface{} `json:"soft_cooldown"`
 }
 
 func requestDistributedChannelForRequest(t *testing.T, tokenID int, usingGroup string, requestPath string, requestBody string, status int, setup func(*gin.Context)) distributedChannelPayload {
@@ -121,9 +122,12 @@ func requestDistributedChannelForRequest(t *testing.T, tokenID int, usingGroup s
 	})
 	router.Use(Distribute())
 	router.POST(requestPath, func(c *gin.Context) {
+		adminInfo := map[string]interface{}{}
+		service.AppendChannelSoftCooldownAdminInfo(c, adminInfo)
 		c.JSON(status, gin.H{
-			"channel_id": c.GetInt("channel_id"),
-			"skip_retry": service.ShouldSkipRetryAfterChannelAffinityFailure(c),
+			"channel_id":    c.GetInt("channel_id"),
+			"skip_retry":    service.ShouldSkipRetryAfterChannelAffinityFailure(c),
+			"soft_cooldown": adminInfo["soft_cooldown"],
 		})
 	})
 
@@ -255,12 +259,13 @@ func TestDistributeClaudeAffinityCoolingDeletesBindingAndFallsBack(t *testing.T)
 
 	body := fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)
 	seedAffinityChannelForRequest(t, "/v1/messages", body, modelName, "default", 4201)
-	service.RecordChannelSoftCooldown(4201, modelName, 529, "overloaded_error")
+	service.RecordChannelSoftCooldown(nil, 4201, modelName, 529, "overloaded_error")
 
 	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusUnavailableForLegalReasons, nil)
 
 	assert.Equal(t, 4202, payload.ChannelID)
 	assert.True(t, payload.SkipRetry, "删除冷却 affinity 绑定不能改写本次请求原有的 skip-retry 策略")
+	assert.Equal(t, true, payload.SoftCooldown["affinity_cleared"])
 	assertClaudeAffinityMissing(t, modelName, "default", affinityKey)
 }
 
@@ -277,12 +282,13 @@ func TestDistributeSoftCooldownDisabledKeepsClaudeAffinity(t *testing.T) {
 
 	body := fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)
 	seedAffinityChannelForRequest(t, "/v1/messages", body, modelName, "default", 4211)
-	service.RecordChannelSoftCooldown(4211, modelName, 529, "overloaded_error")
+	service.RecordChannelSoftCooldown(nil, 4211, modelName, 529, "overloaded_error")
 	operation_setting.GetChannelHealthSetting().SoftFailureCooldownEnabled = false
 
 	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusUnavailableForLegalReasons, nil)
 
 	assert.Equal(t, 4211, payload.ChannelID)
+	assert.Nil(t, payload.SoftCooldown)
 	assertAffinityStillPointsToForRequest(t, "/v1/messages", body, modelName, "default", 4211)
 }
 
@@ -297,7 +303,7 @@ func TestDistributeNonClaudeRequestIgnoresSoftCooldown(t *testing.T) {
 	seedDistributorChannel(t, 4222, modelName, lowPriority)
 	model.InitChannelCache()
 	seedAffinityChannel(t, modelName, "default", affinityKey, 4221)
-	service.RecordChannelSoftCooldown(4221, modelName, 529, "overloaded_error")
+	service.RecordChannelSoftCooldown(nil, 4221, modelName, 529, "overloaded_error")
 
 	selected := requestDistributedChannel(t, 0, "default", affinityKey, http.StatusUnavailableForLegalReasons)
 
@@ -382,7 +388,7 @@ func TestDistributeSpecificChannelBypassesSoftCooldown(t *testing.T) {
 	priority := int64(10)
 	seedDistributorChannel(t, 4231, modelName, priority)
 	model.InitChannelCache()
-	service.RecordChannelSoftCooldown(4231, modelName, 529, "overloaded_error")
+	service.RecordChannelSoftCooldown(nil, 4231, modelName, 529, "overloaded_error")
 	body := fmt.Sprintf(`{"model":"%s"}`, modelName)
 
 	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusUnavailableForLegalReasons, func(c *gin.Context) {
@@ -402,8 +408,8 @@ func TestDistributeAllClaudeChannelsCoolingReturnsRetryAfter(t *testing.T) {
 	seedDistributorChannel(t, 4241, modelName, highPriority)
 	seedDistributorChannel(t, 4242, modelName, lowPriority)
 	model.InitChannelCache()
-	service.RecordChannelSoftCooldown(4241, modelName, 529, "overloaded_error")
-	service.RecordChannelSoftCooldown(4242, modelName, 529, "overloaded_error")
+	service.RecordChannelSoftCooldown(nil, 4241, modelName, 529, "overloaded_error")
+	service.RecordChannelSoftCooldown(nil, 4242, modelName, 529, "overloaded_error")
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

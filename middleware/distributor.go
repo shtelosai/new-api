@@ -122,7 +122,7 @@ func Distribute() func(c *gin.Context) {
 										continue
 									}
 									if useSoftFailureCooldown {
-										if _, cooling := service.GetChannelSoftCooldown(preferred.Id, modelRequest.Model); cooling {
+										if _, cooling := service.GetChannelSoftCooldown(c, preferred.Id, modelRequest.Model); cooling {
 											rejectedByCooldown = true
 											break
 										}
@@ -138,7 +138,7 @@ func Distribute() func(c *gin.Context) {
 						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
 							if model.IsChannelAllowedForToken(tokenID, modelRequest.Model, preferred.Id) {
 								if useSoftFailureCooldown {
-									_, rejectedByCooldown = service.GetChannelSoftCooldown(preferred.Id, modelRequest.Model)
+									_, rejectedByCooldown = service.GetChannelSoftCooldown(c, preferred.Id, modelRequest.Model)
 								}
 								if !rejectedByCooldown {
 									channel = preferred
@@ -153,6 +153,7 @@ func Distribute() func(c *gin.Context) {
 					}
 					if rejectedByCooldown {
 						service.DeleteCurrentChannelAffinityBinding(c)
+						service.RecordAffinityClearedForLog(c)
 					} else if !affinityUsable && !rejectedByTokenFilter && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
 						service.ClearCurrentChannelAffinityCache(c)
 					}

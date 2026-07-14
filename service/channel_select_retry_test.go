@@ -137,17 +137,22 @@ func TestCacheGetRandomSatisfiedChannelSoftCooldownDisabledPreservesSelection(t 
 	seedRetryChannel(t, 3232, modelName, 10)
 	model.InitChannelCache()
 	cleanupChannelSoftCooldownKey(t, 3231, modelName)
-	RecordChannelSoftCooldown(3231, modelName, 529, "overloaded_error")
+	RecordChannelSoftCooldown(nil, 3231, modelName, 529, "overloaded_error")
 	operation_setting.GetChannelHealthSetting().SoftFailureCooldownEnabled = false
 
 	param := newRetrySelectionParam(modelName)
 	param.UseSoftFailureCooldown = true
+	skippedBefore := readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3231"))
 	channel, _, err := CacheGetRandomSatisfiedChannel(param)
 
 	require.NoError(t, err)
 	require.NotNil(t, channel)
 	assert.Equal(t, 3231, channel.Id)
 	assert.Equal(t, 0, param.GetRetry())
+	assert.Equal(t, skippedBefore, readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3231")))
+	adminInfo := map[string]interface{}{}
+	AppendChannelSoftCooldownAdminInfo(param.Ctx, adminInfo)
+	assert.NotContains(t, adminInfo, "soft_cooldown")
 }
 
 func TestCacheGetRandomSatisfiedChannelSkipsCoolingChannelWithoutConsumingRetry(t *testing.T) {
@@ -162,10 +167,11 @@ func TestCacheGetRandomSatisfiedChannelSkipsCoolingChannelWithoutConsumingRetry(
 	seedRetryChannel(t, 3242, modelName, 10)
 	model.InitChannelCache()
 	cleanupChannelSoftCooldownKey(t, 3241, modelName)
-	RecordChannelSoftCooldown(3241, modelName, 529, "overloaded_error")
+	RecordChannelSoftCooldown(nil, 3241, modelName, 529, "overloaded_error")
 
 	param := newRetrySelectionParam(modelName)
 	param.UseSoftFailureCooldown = true
+	skippedBefore := readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3241"))
 	channel, _, err := CacheGetRandomSatisfiedChannel(param)
 
 	require.NoError(t, err)
@@ -173,6 +179,12 @@ func TestCacheGetRandomSatisfiedChannelSkipsCoolingChannelWithoutConsumingRetry(
 	assert.Equal(t, 3242, channel.Id)
 	assert.Equal(t, 0, param.GetRetry(), "跳过冷却渠道不能消耗真实请求的重试计数")
 	assert.Empty(t, param.ExcludedChannelIds, "冷却排除只能存在于本次选择调用内部")
+	assert.Equal(t, skippedBefore+1, readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3241")))
+	adminInfo := map[string]interface{}{}
+	AppendChannelSoftCooldownAdminInfo(param.Ctx, adminInfo)
+	softCooldown, ok := adminInfo["soft_cooldown"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, []int{3241}, softCooldown["skipped_channel_ids"])
 }
 
 func TestCacheGetRandomSatisfiedChannelSkipsCoolingChannelInAutoGroup(t *testing.T) {
@@ -187,7 +199,7 @@ func TestCacheGetRandomSatisfiedChannelSkipsCoolingChannelInAutoGroup(t *testing
 	seedRetryChannel(t, 3252, modelName, 10)
 	model.InitChannelCache()
 	cleanupChannelSoftCooldownKey(t, 3251, modelName)
-	RecordChannelSoftCooldown(3251, modelName, 529, "overloaded_error")
+	RecordChannelSoftCooldown(nil, 3251, modelName, 529, "overloaded_error")
 
 	param := newRetrySelectionParam(modelName)
 	param.TokenGroup = "auto"
@@ -227,6 +239,9 @@ func TestCacheGetRandomSatisfiedChannelReportsAllCandidatesCooling(t *testing.T)
 
 	param := newRetrySelectionParam(modelName)
 	param.UseSoftFailureCooldown = true
+	allCoolingBefore := readCounterValue(t, channelSoftFailover.WithLabelValues(SoftFailoverOutcomeAllCooling))
+	firstSkippedBefore := readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3261"))
+	secondSkippedBefore := readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3262"))
 	channel, _, err := CacheGetRandomSatisfiedChannel(param)
 
 	assert.Nil(t, channel)
@@ -236,6 +251,9 @@ func TestCacheGetRandomSatisfiedChannelReportsAllCandidatesCooling(t *testing.T)
 	assert.InDelta(t, 2, coolingErr.RetryAfterSeconds(), 1)
 	assert.Equal(t, 0, param.GetRetry())
 	assert.Empty(t, param.ExcludedChannelIds)
+	assert.Equal(t, allCoolingBefore+1, readCounterValue(t, channelSoftFailover.WithLabelValues(SoftFailoverOutcomeAllCooling)))
+	assert.Equal(t, firstSkippedBefore+1, readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3261")))
+	assert.Equal(t, secondSkippedBefore+1, readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3262")))
 }
 
 func TestAllChannelsCoolingErrorRetryAfterUsesEarliestExpiry(t *testing.T) {

@@ -132,7 +132,17 @@ func recordChannelSoftCooldownForRelay(c *gin.Context, relayFormat types.RelayFo
 	if errorClass == "" {
 		errorClass = string(newAPIError.GetErrorType())
 	}
-	service.RecordChannelSoftCooldown(channelID, modelName, newAPIError.StatusCode, errorClass)
+	service.RecordChannelSoftCooldown(c, channelID, modelName, newAPIError.StatusCode, errorClass)
+}
+
+func recordChannelSoftFailoverTerminalOutcome(c *gin.Context, succeeded bool) {
+	outcome := service.SoftFailoverOutcomeExhausted
+	if succeeded {
+		outcome = service.SoftFailoverOutcomeSameRequestSuccess
+	} else if common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted) {
+		outcome = service.SoftFailoverOutcomeDeferredAfterCommit
+	}
+	service.RecordChannelSoftFailoverOutcome(c, outcome)
 }
 
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
@@ -298,6 +308,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if relayFormat == types.RelayFormatClaude && !relayRequestContextDone(c) {
 				common.SetContextKey(c, constant.ContextKeyClaudeRelaySucceeded, true)
 			}
+			if useSoftFailureCooldown {
+				recordChannelSoftFailoverTerminalOutcome(c, true)
+			}
 			return
 		}
 
@@ -318,6 +331,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		retryParam.ExcludeChannel(channel.Id)
+	}
+	if useSoftFailureCooldown {
+		recordChannelSoftFailoverTerminalOutcome(c, false)
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -496,6 +512,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			adminInfo["multi_key_index"] = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		}
 		service.AppendChannelAffinityAdminInfo(c, adminInfo)
+		service.AppendChannelSoftCooldownAdminInfo(c, adminInfo)
 		other["admin_info"] = adminInfo
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {

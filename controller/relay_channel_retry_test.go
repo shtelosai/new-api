@@ -85,7 +85,7 @@ func TestGetChannelPreservesLastUpstreamErrorWhenRemainingCandidatesCooling(t *t
 		Group: "default", Model: modelName, ChannelId: 9401, Enabled: true, Priority: &priority, Weight: weight,
 	}).Error)
 	model.InitChannelCache()
-	service.RecordChannelSoftCooldown(9401, modelName, 529, "overloaded_error")
+	service.RecordChannelSoftCooldown(nil, 9401, modelName, 529, "overloaded_error")
 
 	ctx := newRetryTestContext()
 	lastError := types.NewOpenAIError(
