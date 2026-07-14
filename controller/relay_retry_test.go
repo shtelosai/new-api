@@ -471,7 +471,7 @@ func TestRecordChannelSoftCooldownForRelayHonorsRoutingBoundaries(t *testing.T) 
 			entry, cooling := service.GetChannelSoftCooldown(c, channelID, modelName)
 			require.Equal(t, tt.wantCooling, cooling)
 			if tt.wantCooling {
-				require.Equal(t, "rate_limit_error", entry.ErrorClass)
+				require.Equal(t, "rate_limit", entry.ErrorClass)
 				require.Equal(t, http.StatusTooManyRequests, entry.StatusCode)
 			}
 		})

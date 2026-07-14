@@ -65,5 +65,5 @@ func TestProcessChannelErrorIncludesSoftCooldownAdminInfo(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, true, softCooldown["applied"])
 	assert.Equal(t, float64(23), softCooldown["seconds"])
-	assert.Equal(t, "rate_limit_error", softCooldown["reason_class"])
+	assert.Equal(t, "rate_limit", softCooldown["reason_class"])
 }

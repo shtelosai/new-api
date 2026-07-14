@@ -91,7 +91,7 @@ func TestRecordChannelSoftCooldownResetsTTL(t *testing.T) {
 	require.True(t, cooling)
 	assert.True(t, second.ExpiresAt.After(first.ExpiresAt))
 	assert.Equal(t, 429, second.StatusCode)
-	assert.Equal(t, "rate_limited", second.ErrorClass)
+	assert.Equal(t, "rate_limit", second.ErrorClass)
 
 	time.Sleep(time.Until(first.ExpiresAt) + 50*time.Millisecond)
 	_, cooling = GetChannelSoftCooldown(nil, channelID, modelName)

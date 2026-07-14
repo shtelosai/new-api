@@ -78,6 +78,12 @@ func (c *HybridCache[V]) memCache() *hot.HotCache[string, V] {
 }
 
 func (c *HybridCache[V]) Get(key string) (value V, found bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
+	defer cancel()
+	return c.GetWithContext(ctx, key)
+}
+
+func (c *HybridCache[V]) GetWithContext(ctx context.Context, key string) (value V, found bool, err error) {
 	full := c.ns.FullKey(key)
 	if full == "" {
 		var zero V
@@ -85,9 +91,6 @@ func (c *HybridCache[V]) Get(key string) (value V, found bool, err error) {
 	}
 
 	if c.redisOn() {
-		ctx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
-		defer cancel()
-
 		raw, e := c.redis.Get(ctx, full).Result()
 		if e == nil {
 			v, decErr := c.redisCodec.Decode(raw)
@@ -109,6 +112,12 @@ func (c *HybridCache[V]) Get(key string) (value V, found bool, err error) {
 }
 
 func (c *HybridCache[V]) SetWithTTL(key string, v V, ttl time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
+	defer cancel()
+	return c.SetWithTTLContext(ctx, key, v, ttl)
+}
+
+func (c *HybridCache[V]) SetWithTTLContext(ctx context.Context, key string, v V, ttl time.Duration) error {
 	full := c.ns.FullKey(key)
 	if full == "" {
 		return nil
@@ -119,8 +128,6 @@ func (c *HybridCache[V]) SetWithTTL(key string, v V, ttl time.Duration) error {
 		if err != nil {
 			return err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
-		defer cancel()
 		return c.redis.Set(ctx, full, raw, ttl).Err()
 	}
 

@@ -324,7 +324,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
 		remainingRetries := common.RetryTimes - retryParam.GetRetry()
-		if useSoftFailureCooldown {
+		if useSoftFailureCooldown && service.IsSoftModelHealthError(newAPIError) {
 			remainingRetries = attemptLimit - realAttempts
 		}
 		if !shouldRetry(c, newAPIError, remainingRetries) {

@@ -232,7 +232,7 @@ func TestCacheGetRandomSatisfiedChannelReportsAllCandidatesCooling(t *testing.T)
 		cleanupChannelSoftCooldownKey(t, channelID, modelName)
 		require.NoError(t, getChannelSoftCooldownCache().SetWithTTL(
 			fmt.Sprintf("%d:%s", channelID, modelName),
-			ChannelSoftCooldownEntry{ExpiresAt: expiresAt, StatusCode: 529, ErrorClass: "overloaded_error"},
+			ChannelSoftCooldownEntry{ExpiresAt: expiresAt, StatusCode: 529, ErrorClass: "overloaded"},
 			30*time.Second,
 		))
 	}

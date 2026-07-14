@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 const (
 	channelSoftCooldownCacheNamespace = "new-api:channel_soft_cooldown:v1"
 	channelSoftCooldownCacheCapacity  = 10_000
+	channelSoftCooldownCacheTimeout   = 200 * time.Millisecond
 	ginKeySoftCooldownLogInfo         = "channel_soft_cooldown_log_info"
 
 	SoftFailoverOutcomeSameRequestSuccess  = "same_request_success"
@@ -129,12 +132,45 @@ func recordSoftCooldownCacheAccessForLog(c *gin.Context, degraded bool) {
 	info.CacheDegraded = info.CacheDegraded || degraded
 }
 
+func softCooldownCacheCircuitOpen(c *gin.Context) bool {
+	info, ok := getSoftCooldownLogInfo(c)
+	return ok && info.CacheDegraded
+}
+
+func channelSoftCooldownCacheContext(c *gin.Context) (context.Context, context.CancelFunc) {
+	requestContext := context.Background()
+	if c != nil && c.Request != nil {
+		requestContext = c.Request.Context()
+	}
+	return context.WithTimeout(requestContext, channelSoftCooldownCacheTimeout)
+}
+
+func classifyChannelSoftCooldownError(statusCode int, errorType string) string {
+	if statusCode == 429 {
+		return "rate_limit"
+	}
+	if statusCode == 529 {
+		return "overloaded"
+	}
+
+	switch strings.ToLower(strings.TrimSpace(errorType)) {
+	case "rate_limit", "rate_limit_error", "rate_limit_exceeded", "resource_exhausted":
+		return "rate_limit"
+	case "overloaded", "overloaded_error", "system_cpu_overloaded", "system_memory_overloaded", "system_disk_overloaded", "model_capacity_exhausted":
+		return "overloaded"
+	}
+	if statusCode >= 500 && statusCode <= 599 {
+		return "server_error"
+	}
+	return "unknown"
+}
+
 func recordSoftCooldownAppliedForLog(c *gin.Context, seconds int, reasonClass string, cacheDegraded bool) {
 	info := getOrCreateSoftCooldownLogInfo(c)
 	if info == nil {
 		return
 	}
-	info.Applied = true
+	info.Applied = info.Applied || !cacheDegraded
 	info.Seconds = seconds
 	info.ReasonClass = reasonClass
 	info.CacheBackend = channelSoftCooldownCacheBackend()
@@ -211,7 +247,7 @@ func RecordChannelSoftFailoverOutcome(c *gin.Context, outcome string) {
 		return
 	}
 	info, ok := getSoftCooldownLogInfo(c)
-	if !ok || (!info.Applied && len(info.SkippedChannelIDs) == 0) || info.FailoverOutcomeRecorded {
+	if !ok || (!info.Applied && len(info.SkippedChannelIDs) == 0 && !info.AffinityCleared) || info.FailoverOutcomeRecorded {
 		return
 	}
 	info.FailoverOutcomeRecorded = true
@@ -243,17 +279,23 @@ func RecordChannelSoftCooldown(c *gin.Context, channelID int, modelName string, 
 	if !operation_setting.IsSoftFailureCooldownEnabled() {
 		return
 	}
+	if softCooldownCacheCircuitOpen(c) {
+		return
+	}
 
 	seconds := operation_setting.GetSoftFailureCooldownSeconds()
 	ttl := time.Duration(seconds) * time.Second
 	now := time.Now()
+	errorClass = classifyChannelSoftCooldownError(statusCode, errorClass)
 	entry := ChannelSoftCooldownEntry{
 		ExpiresAt:  now.Add(ttl),
 		StatusCode: statusCode,
 		ErrorClass: errorClass,
 	}
 	key := fmt.Sprintf("%d:%s", channelID, modelName)
-	err := getChannelSoftCooldownCache().SetWithTTL(key, entry, ttl)
+	ctx, cancel := channelSoftCooldownCacheContext(c)
+	defer cancel()
+	err := getChannelSoftCooldownCache().SetWithTTLContext(ctx, key, entry, ttl)
 	recordSoftCooldownAppliedForLog(c, seconds, errorClass, err != nil)
 	if err != nil {
 		channelSoftCooldownCacheErrors.WithLabelValues("set").Inc()
@@ -267,9 +309,14 @@ func GetChannelSoftCooldown(c *gin.Context, channelID int, modelName string) (en
 	if !operation_setting.IsSoftFailureCooldownEnabled() {
 		return ChannelSoftCooldownEntry{}, false
 	}
+	if softCooldownCacheCircuitOpen(c) {
+		return ChannelSoftCooldownEntry{}, false
+	}
 
 	key := fmt.Sprintf("%d:%s", channelID, modelName)
-	entry, found, err := getChannelSoftCooldownCache().Get(key)
+	ctx, cancel := channelSoftCooldownCacheContext(c)
+	defer cancel()
+	entry, found, err := getChannelSoftCooldownCache().GetWithContext(ctx, key)
 	recordSoftCooldownCacheAccessForLog(c, err != nil)
 	if err != nil {
 		channelSoftCooldownCacheErrors.WithLabelValues("get").Inc()
