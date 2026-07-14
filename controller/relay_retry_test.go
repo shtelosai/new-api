@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -14,6 +16,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -33,6 +36,12 @@ func newCanceledRetryTestContext() *gin.Context {
 	c.Request = c.Request.WithContext(requestCtx)
 	cancel()
 	return c
+}
+
+type relayRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f relayRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func withRetryStatusRanges(t *testing.T, ranges []operation_setting.StatusCodeRange) {
@@ -200,6 +209,61 @@ func TestRelayWritesOpenAIStreamErrorAfterKeepalive(t *testing.T) {
 
 	require.Contains(t, w.Body.String(), "data: {\"error\":")
 	require.NotContains(t, w.Body.String(), "\n{\"error\":")
+}
+
+func TestRelayMarksSuccessfulClaudeRequest(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	httpClient := service.GetHttpClient()
+	require.NotNil(t, httpClient)
+	originalTransport := httpClient.Transport
+	httpClient.Transport = relayRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_test","type":"message","role":"assistant","model":"claude-3-haiku-20240307","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0}}`,
+			)),
+			Request: req,
+		}, nil
+	})
+	t.Cleanup(func() { httpClient.Transport = originalTransport })
+
+	originalLogConsumeEnabled := common.LogConsumeEnabled
+	quotaSetting := operation_setting.GetQuotaSetting()
+	originalQuotaSetting := *quotaSetting
+	originalModelRatios, err := common.Marshal(ratio_setting.GetModelRatioCopy())
+	require.NoError(t, err)
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"claude-relay-success-test":0}`))
+	common.LogConsumeEnabled = false
+	quotaSetting.EnableFreeModelPreConsume = false
+	t.Cleanup(func() {
+		common.LogConsumeEnabled = originalLogConsumeEnabled
+		*quotaSetting = originalQuotaSetting
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(string(originalModelRatios)))
+	})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-relay-success-test","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "claude-relay-success-test")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{AcceptUnsetRatioModel: true})
+	common.SetContextKey(c, constant.ContextKeyChannelId, 9501)
+	common.SetContextKey(c, constant.ContextKeyChannelName, "claude-success-test")
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeAnthropic)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, "sk-test")
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://claude.test")
+	common.SetContextKey(c, constant.ContextKeyChannelRatio, float64(0))
+
+	Relay(c, types.RelayFormatClaude)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), `"id":"msg_test"`)
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyClaudeRelaySucceeded))
 }
 
 func TestShouldRetryDoesNotRetryAfterClientCancel(t *testing.T) {

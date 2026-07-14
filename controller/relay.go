@@ -295,6 +295,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
+			if relayFormat == types.RelayFormatClaude && !relayRequestContextDone(c) {
+				common.SetContextKey(c, constant.ContextKeyClaudeRelaySucceeded, true)
+			}
 			return
 		}
 

@@ -72,6 +72,7 @@ const (
 	// Claude 流式响应提交前允许只发送 keepalive；只有真正业务事件写出后才视为已提交。
 	ContextKeyClaudeStreamGateActive ContextKey = "claude_stream_gate_active"
 	ContextKeyClaudeStreamCommitted  ContextKey = "claude_stream_committed"
+	ContextKeyClaudeRelaySucceeded   ContextKey = "claude_relay_succeeded"
 
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit

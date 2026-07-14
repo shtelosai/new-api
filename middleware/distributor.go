@@ -33,6 +33,7 @@ type ModelRequest struct {
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
+		useSoftFailureCooldown := false
 		channelId, ok := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId)
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {
@@ -84,7 +85,7 @@ func Distribute() func(c *gin.Context) {
 				}
 				var selectGroup string
 				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
-				useSoftFailureCooldown := operation_setting.IsSoftFailureCooldownEnabled() && c.Request.URL.Path == "/v1/messages"
+				useSoftFailureCooldown = operation_setting.IsSoftFailureCooldownEnabled() && c.Request.URL.Path == "/v1/messages"
 				// check path is /pg/chat/completions
 				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
 					playgroundRequest := &dto.PlayGroundRequest{}
@@ -195,7 +196,11 @@ func Distribute() func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
-		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
+		if useSoftFailureCooldown {
+			if channel != nil && c.Writer != nil && common.GetContextKeyBool(c, constant.ContextKeyClaudeRelaySucceeded) {
+				service.RecordChannelAffinity(c, channel.Id)
+			}
+		} else if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}

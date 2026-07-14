@@ -305,6 +305,76 @@ func TestDistributeNonClaudeRequestIgnoresSoftCooldown(t *testing.T) {
 	assertAffinityStillPointsTo(t, modelName, "default", affinityKey, 4221)
 }
 
+func TestDistributeClaudeSoftCooldownDoesNotRecordAffinityWithoutRelaySuccess(t *testing.T) {
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+	modelName := "claude-affinity-stream-failure"
+	affinityKey := fmt.Sprintf("claude-stream-failure-%d", time.Now().UnixNano())
+	priority := int64(10)
+	seedDistributorChannel(t, 4251, modelName, priority)
+	model.InitChannelCache()
+	body := fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)
+
+	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusOK, func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, true)
+	})
+
+	assert.Equal(t, 4251, payload.ChannelID)
+	assertClaudeAffinityMissing(t, modelName, "default", affinityKey)
+}
+
+func TestDistributeClaudeSoftCooldownRecordsAffinityAfterRelaySuccess(t *testing.T) {
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+	modelName := "claude-affinity-success"
+	affinityKey := fmt.Sprintf("claude-success-%d", time.Now().UnixNano())
+	priority := int64(10)
+	seedDistributorChannel(t, 4252, modelName, priority)
+	model.InitChannelCache()
+	body := fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)
+
+	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusOK, func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyClaudeRelaySucceeded, true)
+	})
+
+	assert.Equal(t, 4252, payload.ChannelID)
+	assertAffinityStillPointsToForRequest(t, "/v1/messages", body, modelName, "default", 4252)
+}
+
+func TestDistributeClaudeSoftCooldownDisabledKeepsStatusBasedAffinityRecording(t *testing.T) {
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, false, 30)
+	modelName := "claude-affinity-disabled-stream-failure"
+	affinityKey := fmt.Sprintf("claude-disabled-stream-failure-%d", time.Now().UnixNano())
+	priority := int64(10)
+	seedDistributorChannel(t, 4253, modelName, priority)
+	model.InitChannelCache()
+	body := fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)
+
+	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusOK, func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, true)
+	})
+
+	assert.Equal(t, 4253, payload.ChannelID)
+	assertAffinityStillPointsToForRequest(t, "/v1/messages", body, modelName, "default", 4253)
+}
+
+func TestDistributeNonClaudeKeepsStatusBasedAffinityRecording(t *testing.T) {
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+	modelName := "gpt-5"
+	affinityKey := fmt.Sprintf("responses-success-%d", time.Now().UnixNano())
+	priority := int64(10)
+	seedDistributorChannel(t, 4254, modelName, priority)
+	model.InitChannelCache()
+	body := fmt.Sprintf(`{"model":"%s","prompt_cache_key":"%s"}`, modelName, affinityKey)
+
+	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/responses", body, http.StatusOK, nil)
+
+	assert.Equal(t, 4254, payload.ChannelID)
+	assertAffinityStillPointsToForRequest(t, "/v1/responses", body, modelName, "default", 4254)
+}
+
 func TestDistributeSpecificChannelBypassesSoftCooldown(t *testing.T) {
 	setupDistributorTokenAffinityDB(t)
 	setupDistributorSoftCooldown(t, true, 30)
