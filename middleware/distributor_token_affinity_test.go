@@ -237,6 +237,20 @@ func assertClaudeAffinityMissing(t *testing.T, modelName string, usingGroup stri
 	assert.False(t, found)
 }
 
+func TestDeleteCoolingAffinityBindingDoesNotRecordWhenNothingDeleted(t *testing.T) {
+	setupDistributorSoftCooldown(t, true, 30)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	deleted := deleteCoolingAffinityBinding(ctx)
+
+	assert.False(t, deleted)
+	adminInfo := map[string]interface{}{}
+	service.AppendChannelSoftCooldownAdminInfo(ctx, adminInfo)
+	assert.NotContains(t, adminInfo, "soft_cooldown")
+}
+
 func TestDistributeClaudeAffinityCoolingDeletesBindingAndFallsBack(t *testing.T) {
 	setupDistributorTokenAffinityDB(t)
 	setupDistributorSoftCooldown(t, true, 30)

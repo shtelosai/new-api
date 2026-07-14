@@ -13,7 +13,7 @@ type ChannelHealthSetting struct {
 	SoftFailureCooldownEnabled bool `json:"soft_failure_cooldown_enabled"`
 	// 软故障冷却时间（秒）
 	SoftFailureCooldownSeconds int `json:"soft_failure_cooldown_seconds"`
-	// 单次请求最多尝试的软故障渠道数
+	// 单次请求最多尝试的软故障渠道数；低于 RetryTimes+1 时不会缩小已有重试预算
 	SoftFailureMaxAttempts int `json:"soft_failure_max_attempts"`
 	// 连续失败阈值：健康检查连续失败达此值才写入禁用表（防抖）
 	FailureThreshold int `json:"failure_threshold"`

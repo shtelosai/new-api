@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -18,8 +19,10 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -71,6 +74,9 @@ func setupRelaySoftCooldownChannels(t *testing.T, modelName string, channelCount
 	quotaSetting.EnableFreeModelPreConsume = false
 
 	t.Cleanup(func() {
+		require.Eventually(t, func() bool {
+			return gopool.WorkerCount() == 0
+		}, 3*time.Second, 10*time.Millisecond)
 		model.DB = originalDB
 		model.LOG_DB = originalLogDB
 		common.SetDatabaseTypes(originalMainDatabaseType, originalLogDatabaseType)
@@ -124,7 +130,13 @@ func setupRelaySoftCooldownChannels(t *testing.T, modelName string, channelCount
 	return channels
 }
 
-func runClaudeRelayWithStatuses(t *testing.T, modelName string, firstChannel *model.Channel, statuses []int) (*httptest.ResponseRecorder, int) {
+func setRelaySoftCooldownChannelModelMapping(t *testing.T, channel *model.Channel, mapping string) {
+	t.Helper()
+	channel.ModelMapping = common.GetPointer(mapping)
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).Update("model_mapping", mapping).Error)
+}
+
+func runClaudeRelayWithStatuses(t *testing.T, modelName string, firstChannel *model.Channel, statuses []int) (*httptest.ResponseRecorder, int, int) {
 	t.Helper()
 	require.NotEmpty(t, statuses)
 	if service.GetHttpClient() == nil {
@@ -165,7 +177,7 @@ func runClaudeRelayWithStatuses(t *testing.T, modelName string, firstChannel *mo
 	require.Nil(t, middleware.SetupContextForSelectedChannel(c, firstChannel, modelName))
 
 	Relay(c, types.RelayFormatClaude)
-	return w, attempts
+	return w, attempts, len(c.GetStringSlice("use_channel"))
 }
 
 func configureClaudeAffinityForRelayTest(t *testing.T) {
@@ -202,7 +214,7 @@ func seedClaudeAffinityForRelayTest(t *testing.T, modelName string, affinityKey 
 	t.Cleanup(func() { service.ClearCurrentChannelAffinityCache(c) })
 }
 
-func requireClaudeAffinityChannelForRelayTest(t *testing.T, modelName string, affinityKey string, channelID int) {
+func assertClaudeAffinityChannelForRelayTest(t *testing.T, modelName string, affinityKey string, channelID int) {
 	t.Helper()
 	body := fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)
 	w := httptest.NewRecorder()
@@ -211,8 +223,8 @@ func requireClaudeAffinityChannelForRelayTest(t *testing.T, modelName string, af
 	c.Request.Header.Set("Content-Type", "application/json")
 
 	actualChannelID, found := service.GetPreferredChannelByAffinity(c, modelName, "default")
-	require.True(t, found)
-	require.Equal(t, channelID, actualChannelID)
+	assert.True(t, found)
+	assert.Equal(t, channelID, actualChannelID)
 }
 
 func runClaudeRelayThroughDistribute(
@@ -273,18 +285,34 @@ func TestRelaySoftFailureRetriesCanUseExpandedAttemptBudget(t *testing.T) {
 	modelName := uniqueRelaySoftCooldownModelName("claude-soft-retry-budget")
 	channels := setupRelaySoftCooldownChannels(t, modelName, 5, 3, 5)
 
-	w, attempts := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{529, 529, 529, 529, http.StatusOK})
+	w, attempts, usedChannels := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{529, 529, 529, 529, http.StatusOK})
 
-	require.Equal(t, 5, attempts)
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Contains(t, w.Body.String(), `"id":"msg_test"`)
+	assert.Equal(t, 5, attempts)
+	assert.Equal(t, 5, usedChannels)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"id":"msg_test"`)
+}
+
+func TestRelayChannelErrorsDoNotExpandAttemptBudgetWithoutSoftFailure(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("claude-channel-error-retry-budget")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 5, 3, 5)
+	for _, channel := range channels {
+		setRelaySoftCooldownChannelModelMapping(t, channel, "{")
+	}
+	model.InitChannelCache()
+
+	w, upstreamAttempts, usedChannels := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{http.StatusOK})
+
+	assert.Equal(t, 0, upstreamAttempts)
+	assert.Equal(t, common.RetryTimes+1, usedChannels)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 func TestRelayNonSoftFailureKeepsGlobalRetryBudget(t *testing.T) {
 	modelName := uniqueRelaySoftCooldownModelName("claude-hard-retry-budget")
 	channels := setupRelaySoftCooldownChannels(t, modelName, 5, 3, 5)
 
-	w, attempts := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{
+	w, attempts, usedChannels := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{
 		http.StatusInternalServerError,
 		http.StatusInternalServerError,
 		http.StatusInternalServerError,
@@ -292,8 +320,9 @@ func TestRelayNonSoftFailureKeepsGlobalRetryBudget(t *testing.T) {
 		http.StatusInternalServerError,
 	})
 
-	require.Equal(t, 4, attempts)
-	require.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, 4, attempts)
+	assert.Equal(t, 4, usedChannels)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 func TestRelayMixedFailuresUseBudgetForLatestFailure(t *testing.T) {
@@ -301,20 +330,24 @@ func TestRelayMixedFailuresUseBudgetForLatestFailure(t *testing.T) {
 		modelName := uniqueRelaySoftCooldownModelName("claude-mixed-budget-soft-hard")
 		channels := setupRelaySoftCooldownChannels(t, modelName, 4, 1, 4)
 
-		w, attempts := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{529, http.StatusInternalServerError, http.StatusOK})
+		w, attempts, usedChannels := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{529, http.StatusInternalServerError, http.StatusOK})
 
-		require.Equal(t, 2, attempts)
-		require.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Equal(t, 2, attempts)
+		assert.Equal(t, 2, usedChannels)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
 	})
 
-	t.Run("non-soft failure followed by soft failures can use expanded budget", func(t *testing.T) {
+	t.Run("channel error followed by soft failures can use expanded budget", func(t *testing.T) {
 		modelName := uniqueRelaySoftCooldownModelName("claude-mixed-budget-hard-soft")
 		channels := setupRelaySoftCooldownChannels(t, modelName, 4, 1, 4)
+		setRelaySoftCooldownChannelModelMapping(t, channels[0], "{")
+		model.InitChannelCache()
 
-		w, attempts := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{http.StatusInternalServerError, 529, 529, http.StatusOK})
+		w, upstreamAttempts, usedChannels := runClaudeRelayWithStatuses(t, modelName, channels[0], []int{529, 529, http.StatusOK})
 
-		require.Equal(t, 4, attempts)
-		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, 3, upstreamAttempts)
+		assert.Equal(t, 4, usedChannels)
+		assert.Equal(t, http.StatusOK, w.Code)
 	})
 }
 
@@ -341,13 +374,13 @@ func TestRelayCountsSuccessAfterCoolingAffinityIsCleared(t *testing.T) {
 		return http.StatusInternalServerError
 	})
 
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, []string{"channel-9701.test"}, requestedHosts)
-	requireClaudeAffinityChannelForRelayTest(t, modelName, affinityKey, channels[1].Id)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{"channel-9701.test"}, requestedHosts)
+	assertClaudeAffinityChannelForRelayTest(t, modelName, affinityKey, channels[1].Id)
 	softCooldown, ok := adminInfo["soft_cooldown"].(map[string]interface{})
-	require.True(t, ok)
-	require.Equal(t, true, softCooldown["affinity_cleared"])
-	require.Equal(t, outcomeBefore+1, gatheredCounterValue(t, "newapi_channel_soft_failover_total", map[string]string{
+	assert.True(t, ok)
+	assert.Equal(t, true, softCooldown["affinity_cleared"])
+	assert.Equal(t, outcomeBefore+1, gatheredCounterValue(t, "newapi_channel_soft_failover_total", map[string]string{
 		"outcome": service.SoftFailoverOutcomeSameRequestSuccess,
 	}))
 }
@@ -373,24 +406,24 @@ func TestDistributeRelaySoftFailureFailoverRebindsAffinity(t *testing.T) {
 		return http.StatusOK
 	})
 
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Contains(t, w.Body.String(), `"id":"msg_integration"`)
-	require.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, requestedHosts)
-	requireClaudeAffinityChannelForRelayTest(t, modelName, affinityKey, channels[1].Id)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"id":"msg_integration"`)
+	assert.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, requestedHosts)
+	assertClaudeAffinityChannelForRelayTest(t, modelName, affinityKey, channels[1].Id)
 	entry, cooling := service.GetChannelSoftCooldown(nil, channels[0].Id, modelName)
-	require.True(t, cooling)
-	require.Equal(t, "overloaded", entry.ErrorClass)
+	assert.True(t, cooling)
+	assert.Equal(t, "overloaded", entry.ErrorClass)
 	softCooldown, ok := adminInfo["soft_cooldown"].(map[string]interface{})
-	require.True(t, ok)
-	require.Equal(t, true, softCooldown["applied"])
-	require.Equal(t, "overloaded", softCooldown["reason_class"])
-	require.Equal(t, false, softCooldown["cache_degraded"])
-	require.Equal(t, false, softCooldown["affinity_cleared"])
-	require.Equal(t, appliedBefore+1, gatheredCounterValue(t, "newapi_channel_soft_cooldown_applied_total", map[string]string{
+	assert.True(t, ok)
+	assert.Equal(t, true, softCooldown["applied"])
+	assert.Equal(t, "overloaded", softCooldown["reason_class"])
+	assert.Equal(t, false, softCooldown["cache_degraded"])
+	assert.Equal(t, false, softCooldown["affinity_cleared"])
+	assert.Equal(t, appliedBefore+1, gatheredCounterValue(t, "newapi_channel_soft_cooldown_applied_total", map[string]string{
 		"channel_id":  "9700",
 		"error_class": "overloaded",
 	}))
-	require.Equal(t, outcomeBefore+1, gatheredCounterValue(t, "newapi_channel_soft_failover_total", map[string]string{
+	assert.Equal(t, outcomeBefore+1, gatheredCounterValue(t, "newapi_channel_soft_failover_total", map[string]string{
 		"outcome": service.SoftFailoverOutcomeSameRequestSuccess,
 	}))
 }

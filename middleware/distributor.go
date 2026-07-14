@@ -30,6 +30,14 @@ type ModelRequest struct {
 	Group string `json:"group,omitempty"`
 }
 
+func deleteCoolingAffinityBinding(c *gin.Context) bool {
+	deleted := service.DeleteCurrentChannelAffinityBinding(c)
+	if deleted {
+		service.RecordAffinityClearedForLog(c)
+	}
+	return deleted
+}
+
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
@@ -152,8 +160,7 @@ func Distribute() func(c *gin.Context) {
 						}
 					}
 					if rejectedByCooldown {
-						service.DeleteCurrentChannelAffinityBinding(c)
-						service.RecordAffinityClearedForLog(c)
+						deleteCoolingAffinityBinding(c)
 					} else if !affinityUsable && !rejectedByTokenFilter && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
 						service.ClearCurrentChannelAffinityCache(c)
 					}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -138,6 +139,64 @@ func TestSoftCooldownRedisTimeoutTripsRequestCircuitBreaker(t *testing.T) {
 	assert.Equal(t, true, softCooldown["cache_degraded"])
 }
 
+func TestSoftCooldownClientCancellationDoesNotDegradeCache(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		call      func(*gin.Context)
+	}{
+		{
+			name:      "get",
+			operation: "get",
+			call: func(ctx *gin.Context) {
+				_, _ = GetChannelSoftCooldown(ctx, 91003, "claude-client-canceled-get")
+			},
+		},
+		{
+			name:      "set",
+			operation: "set",
+			call: func(ctx *gin.Context) {
+				RecordChannelSoftCooldown(ctx, 91004, "claude-client-canceled-set", 529, "overloaded_error")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupChannelSoftCooldownTest(t, true, 30)
+			hook := &blockingRedisHook{}
+			client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+			client.AddHook(hook)
+			useRedisClientForSoftCooldownTest(t, client)
+			t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+			ctx := newSoftCooldownObservabilityContext()
+			requestContext, cancel := context.WithCancel(ctx.Request.Context())
+			ctx.Request = ctx.Request.WithContext(requestContext)
+			cancel()
+			before := readCounterValue(t, channelSoftCooldownCacheErrors.WithLabelValues(tt.operation))
+			var errorLog bytes.Buffer
+			common.LogWriterMu.Lock()
+			originalErrorWriter := gin.DefaultErrorWriter
+			gin.DefaultErrorWriter = &errorLog
+			common.LogWriterMu.Unlock()
+			t.Cleanup(func() {
+				common.LogWriterMu.Lock()
+				gin.DefaultErrorWriter = originalErrorWriter
+				common.LogWriterMu.Unlock()
+			})
+
+			tt.call(ctx)
+
+			assert.Equal(t, int32(1), hook.calls.Load())
+			assert.Equal(t, before, readCounterValue(t, channelSoftCooldownCacheErrors.WithLabelValues(tt.operation)))
+			_, hasLogInfo := getSoftCooldownLogInfo(ctx)
+			assert.False(t, hasLogInfo)
+			assert.NotContains(t, errorLog.String(), "channel soft cooldown cache "+tt.operation+" failed")
+		})
+	}
+}
+
 func TestRecordChannelSoftCooldownAddsNestedAdminInfoAndAppliedMetric(t *testing.T) {
 	setupChannelSoftCooldownTest(t, true, 17)
 	const channelID = 91101
@@ -212,9 +271,7 @@ func TestAppendChannelSoftCooldownAdminInfoOnlyAddsRelatedRequests(t *testing.T)
 	common.SetContextKey(committed, constant.ContextKeyClaudeStreamCommitted, true)
 	adminInfo = map[string]interface{}{}
 	AppendChannelSoftCooldownAdminInfo(committed, adminInfo)
-	softCooldown, ok := adminInfo["soft_cooldown"].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, true, softCooldown["stream_semantic_committed"])
+	assert.NotContains(t, adminInfo, "soft_cooldown")
 
 	other := GenerateTextOtherInfo(committed, &relaycommon.RelayInfo{
 		StartTime:         time.Now(),
@@ -223,7 +280,7 @@ func TestAppendChannelSoftCooldownAdminInfoOnlyAddsRelatedRequests(t *testing.T)
 	}, 1, 1, 1, 0, 1, 0, 1)
 	consumeAdminInfo, ok := other["admin_info"].(map[string]interface{})
 	require.True(t, ok)
-	assert.Contains(t, consumeAdminInfo, "soft_cooldown")
+	assert.NotContains(t, consumeAdminInfo, "soft_cooldown")
 
 	operationSetting := operation_setting.GetChannelHealthSetting()
 	operationSetting.SoftFailureCooldownEnabled = false

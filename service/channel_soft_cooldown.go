@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -145,6 +146,13 @@ func channelSoftCooldownCacheContext(c *gin.Context) (context.Context, context.C
 	return context.WithTimeout(requestContext, channelSoftCooldownCacheTimeout)
 }
 
+func channelSoftCooldownRequestCanceled(c *gin.Context, err error) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	return errors.Is(err, c.Request.Context().Err())
+}
+
 func classifyChannelSoftCooldownError(statusCode int, errorType string) string {
 	if statusCode == 429 {
 		return "rate_limit"
@@ -205,19 +213,13 @@ func AppendChannelSoftCooldownAdminInfo(c *gin.Context, adminInfo map[string]int
 		return
 	}
 	info, hasInfo := getSoftCooldownLogInfo(c)
-	streamCommitted := common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted)
 	if !hasInfo {
-		if !streamCommitted {
-			return
-		}
-		info = &channelSoftCooldownLogInfo{
-			SkippedChannelIDs: make([]int, 0),
-			CacheBackend:      channelSoftCooldownCacheBackend(),
-		}
-	}
-	if !info.Applied && len(info.SkippedChannelIDs) == 0 && !info.CacheDegraded && !info.AffinityCleared && !streamCommitted {
 		return
 	}
+	if !info.Applied && len(info.SkippedChannelIDs) == 0 && !info.CacheDegraded && !info.AffinityCleared {
+		return
+	}
+	streamCommitted := common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted)
 	cacheBackend := info.CacheBackend
 	if cacheBackend == "" {
 		cacheBackend = channelSoftCooldownCacheBackend()
@@ -296,6 +298,9 @@ func RecordChannelSoftCooldown(c *gin.Context, channelID int, modelName string, 
 	ctx, cancel := channelSoftCooldownCacheContext(c)
 	defer cancel()
 	err := getChannelSoftCooldownCache().SetWithTTLContext(ctx, key, entry, ttl)
+	if err != nil && channelSoftCooldownRequestCanceled(c, err) {
+		return
+	}
 	recordSoftCooldownAppliedForLog(c, seconds, errorClass, err != nil)
 	if err != nil {
 		channelSoftCooldownCacheErrors.WithLabelValues("set").Inc()
@@ -317,6 +322,9 @@ func GetChannelSoftCooldown(c *gin.Context, channelID int, modelName string) (en
 	ctx, cancel := channelSoftCooldownCacheContext(c)
 	defer cancel()
 	entry, found, err := getChannelSoftCooldownCache().GetWithContext(ctx, key)
+	if err != nil && channelSoftCooldownRequestCanceled(c, err) {
+		return ChannelSoftCooldownEntry{}, false
+	}
 	recordSoftCooldownCacheAccessForLog(c, err != nil)
 	if err != nil {
 		channelSoftCooldownCacheErrors.WithLabelValues("get").Inc()

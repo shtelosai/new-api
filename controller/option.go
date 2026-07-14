@@ -29,6 +29,8 @@ var completionRatioMetaOptionKeys = []string{
 	"AudioCompletionRatio",
 }
 
+const maxSoftFailureCooldownSeconds = 24 * 60 * 60
+
 func isPaymentComplianceOptionKey(key string) bool {
 	return strings.HasPrefix(key, "payment_setting.compliance_")
 }
@@ -212,6 +214,32 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "无法启用 Telegram OAuth，请先填入 Telegram Bot Token！",
+			})
+			return
+		}
+	case "channel_health_setting.soft_failure_cooldown_enabled":
+		if _, parseErr := strconv.ParseBool(strings.TrimSpace(option.Value.(string))); parseErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "软故障冷却开关必须是合法的布尔值",
+			})
+			return
+		}
+	case "channel_health_setting.soft_failure_cooldown_seconds":
+		seconds, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || seconds <= 0 || seconds > maxSoftFailureCooldownSeconds {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "软故障冷却时间必须是 1 到 86400 之间的整数",
+			})
+			return
+		}
+	case "channel_health_setting.soft_failure_max_attempts":
+		attempts, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || attempts < 1 || attempts > 10 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "软故障最大尝试次数必须是 1 到 10 之间的整数",
 			})
 			return
 		}

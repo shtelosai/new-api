@@ -266,10 +266,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.LastError = nil
 	useSoftFailureCooldown := softFailureCooldownEnabledForRelay(c, relayFormat)
 	attemptLimit := relayAttemptLimit(c, relayFormat)
+	effectiveAttemptLimit := common.RetryTimes + 1
 	realAttempts := 0
 	retryParam.UseSoftFailureCooldown = useSoftFailureCooldown
 
-	for ; (!useSoftFailureCooldown && retryParam.GetRetry() <= common.RetryTimes) || (useSoftFailureCooldown && realAttempts < attemptLimit); retryParam.IncreaseRetry() {
+	for ; (!useSoftFailureCooldown && retryParam.GetRetry() <= common.RetryTimes) || (useSoftFailureCooldown && realAttempts < effectiveAttemptLimit); retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
@@ -323,8 +324,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		recordChannelSoftCooldownForRelay(c, relayFormat, relayInfo, channel.Id, relayInfo.OriginModelName, newAPIError)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
+		softModelHealthFailure := useSoftFailureCooldown && service.IsSoftModelHealthError(newAPIError)
+		if softModelHealthFailure {
+			effectiveAttemptLimit = attemptLimit
+		}
 		remainingRetries := common.RetryTimes - retryParam.GetRetry()
-		if useSoftFailureCooldown && service.IsSoftModelHealthError(newAPIError) {
+		if softModelHealthFailure {
 			remainingRetries = attemptLimit - realAttempts
 		}
 		if !shouldRetry(c, newAPIError, remainingRetries) {
