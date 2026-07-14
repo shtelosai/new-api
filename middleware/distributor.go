@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -83,6 +84,7 @@ func Distribute() func(c *gin.Context) {
 				}
 				var selectGroup string
 				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+				useSoftFailureCooldown := operation_setting.IsSoftFailureCooldownEnabled() && c.Request.URL.Path == "/v1/messages"
 				// check path is /pg/chat/completions
 				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
 					playgroundRequest := &dto.PlayGroundRequest{}
@@ -104,6 +106,7 @@ func Distribute() func(c *gin.Context) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					rejectedByTokenFilter := false
+					rejectedByCooldown := false
 					tokenID := c.GetInt(string(constant.ContextKeyTokenId))
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
@@ -117,6 +120,12 @@ func Distribute() func(c *gin.Context) {
 										rejectedByTokenFilter = true
 										continue
 									}
+									if useSoftFailureCooldown {
+										if _, cooling := service.GetChannelSoftCooldown(preferred.Id, modelRequest.Model); cooling {
+											rejectedByCooldown = true
+											break
+										}
+									}
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 									channel = preferred
@@ -127,28 +136,36 @@ func Distribute() func(c *gin.Context) {
 							}
 						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
 							if model.IsChannelAllowedForToken(tokenID, modelRequest.Model, preferred.Id) {
-								channel = preferred
-								selectGroup = usingGroup
-								affinityUsable = true
-								service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+								if useSoftFailureCooldown {
+									_, rejectedByCooldown = service.GetChannelSoftCooldown(preferred.Id, modelRequest.Model)
+								}
+								if !rejectedByCooldown {
+									channel = preferred
+									selectGroup = usingGroup
+									affinityUsable = true
+									service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+								}
 							} else {
 								rejectedByTokenFilter = true
 							}
 						}
 					}
-					if !affinityUsable && !rejectedByTokenFilter && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
+					if rejectedByCooldown {
+						service.DeleteCurrentChannelAffinityBinding(c)
+					} else if !affinityUsable && !rejectedByTokenFilter && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
 						service.ClearCurrentChannelAffinityCache(c)
 					}
 				}
 
 				if channel == nil {
 					channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
-						Ctx:         c,
-						ModelName:   modelRequest.Model,
-						TokenGroup:  usingGroup,
-						RequestPath: c.Request.URL.Path,
-						TokenId:     c.GetInt(string(constant.ContextKeyTokenId)),
-						Retry:       common.GetPointer(0),
+						Ctx:                    c,
+						ModelName:              modelRequest.Model,
+						TokenGroup:             usingGroup,
+						RequestPath:            c.Request.URL.Path,
+						TokenId:                c.GetInt(string(constant.ContextKeyTokenId)),
+						Retry:                  common.GetPointer(0),
+						UseSoftFailureCooldown: useSoftFailureCooldown,
 					})
 					if err != nil {
 						showGroup := usingGroup
@@ -161,6 +178,10 @@ func Distribute() func(c *gin.Context) {
 						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
 						//	message = "数据库一致性已被破坏，请联系管理员"
 						//}
+						var coolingErr *service.AllChannelsCoolingError
+						if errors.As(err, &coolingErr) {
+							c.Header("Retry-After", strconv.Itoa(coolingErr.RetryAfterSeconds()))
+						}
 						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
 						return
 					}

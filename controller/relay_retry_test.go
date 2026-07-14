@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -232,4 +235,101 @@ func TestShouldRetryTaskRelayDoesNotRetryAfterClientCancel(t *testing.T) {
 	}
 
 	require.False(t, shouldRetryTaskRelay(c, 1, err, 1))
+}
+
+func TestRelayAttemptLimitOnlyExpandsClaudeWhenSoftCooldownEnabled(t *testing.T) {
+	healthSetting := operation_setting.GetChannelHealthSetting()
+	originalSetting := *healthSetting
+	originalRetryTimes := common.RetryTimes
+	t.Cleanup(func() {
+		*healthSetting = originalSetting
+		common.RetryTimes = originalRetryTimes
+	})
+	healthSetting.SoftFailureMaxAttempts = 5
+	common.RetryTimes = 0
+	c := newRetryTestContext()
+
+	healthSetting.SoftFailureCooldownEnabled = false
+	require.Equal(t, 1, relayAttemptLimit(c, types.RelayFormatClaude))
+
+	healthSetting.SoftFailureCooldownEnabled = true
+	require.Equal(t, 5, relayAttemptLimit(c, types.RelayFormatClaude))
+	require.Equal(t, 1, relayAttemptLimit(c, types.RelayFormatOpenAIResponses))
+
+	c.Set(string(constant.ContextKeyTokenSpecificChannelId), "42")
+	require.Equal(t, 1, relayAttemptLimit(c, types.RelayFormatClaude))
+
+	c = newRetryTestContext()
+	common.RetryTimes = 6
+	require.Equal(t, 7, relayAttemptLimit(c, types.RelayFormatClaude), "开启冷却后不能缩小既有真实请求预算")
+}
+
+func TestRecordChannelSoftCooldownForRelayHonorsRoutingBoundaries(t *testing.T) {
+	healthSetting := operation_setting.GetChannelHealthSetting()
+	originalSetting := *healthSetting
+	originalRedisEnabled := common.RedisEnabled
+	healthSetting.SoftFailureCooldownEnabled = true
+	healthSetting.SoftFailureCooldownSeconds = 30
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		*healthSetting = originalSetting
+		common.RedisEnabled = originalRedisEnabled
+	})
+
+	softErr := types.WithOpenAIError(types.OpenAIError{
+		Message: "upstream rate limit exceeded",
+		Type:    "rate_limit_error",
+		Code:    "rate_limit_error",
+	}, http.StatusTooManyRequests)
+	hardErr := types.WithOpenAIError(types.OpenAIError{
+		Message: "invalid api key",
+		Type:    "authentication_error",
+		Code:    "invalid_api_key",
+	}, http.StatusUnauthorized)
+
+	tests := []struct {
+		name        string
+		relayFormat types.RelayFormat
+		info        *relaycommon.RelayInfo
+		err         *types.NewAPIError
+		setup       func(*gin.Context)
+		enabled     bool
+		wantCooling bool
+	}{
+		{name: "claude soft error", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: softErr, enabled: true, wantCooling: true},
+		{name: "feature disabled", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: softErr, enabled: false},
+		{name: "non claude", relayFormat: types.RelayFormatOpenAIResponses, info: &relaycommon.RelayInfo{}, err: softErr, enabled: true},
+		{name: "specific channel", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: softErr, enabled: true, setup: func(c *gin.Context) {
+			c.Set(string(constant.ContextKeyTokenSpecificChannelId), "42")
+		}},
+		{name: "admin channel test", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{IsChannelTest: true}, err: softErr, enabled: true},
+		{name: "client canceled", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: softErr, enabled: true, setup: func(c *gin.Context) {
+			requestCtx, cancel := context.WithCancel(c.Request.Context())
+			c.Request = c.Request.WithContext(requestCtx)
+			cancel()
+		}},
+		{name: "hard error", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: hardErr, enabled: true},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channelID := 9300 + i
+			modelName := fmt.Sprintf("claude-record-boundary-%d", i)
+			c := newRetryTestContext()
+			if tt.setup != nil {
+				tt.setup(c)
+			}
+			healthSetting.SoftFailureCooldownEnabled = tt.enabled
+
+			recordChannelSoftCooldownForRelay(c, tt.relayFormat, tt.info, channelID, modelName, tt.err)
+
+			healthSetting.SoftFailureCooldownEnabled = true
+			entry, cooling := service.GetChannelSoftCooldown(channelID, modelName)
+			require.Equal(t, tt.wantCooling, cooling)
+			if tt.wantCooling {
+				require.Equal(t, "rate_limit_error", entry.ErrorClass)
+				require.Equal(t, http.StatusTooManyRequests, entry.StatusCode)
+			}
+		})
+	}
 }

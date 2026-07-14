@@ -642,6 +642,16 @@ func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {
 }
 
 func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
+	return deleteCurrentChannelAffinityCache(c, true)
+}
+
+// DeleteCurrentChannelAffinityBinding removes the cached binding without changing
+// the retry policy already derived for the current request.
+func DeleteCurrentChannelAffinityBinding(c *gin.Context) bool {
+	return deleteCurrentChannelAffinityCache(c, false)
+}
+
+func deleteCurrentChannelAffinityCache(c *gin.Context, resetSkipRetry bool) bool {
 	if c == nil {
 		return false
 	}
@@ -656,7 +666,9 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 		common.SysError(fmt.Sprintf("channel affinity cache delete current failed: err=%v", err))
 		return false
 	}
-	c.Set(ginKeyChannelAffinitySkipRetry, false)
+	if resetSkipRetry {
+		c.Set(ginKeyChannelAffinitySkipRetry, false)
+	}
 	for _, ok := range deleted {
 		if ok {
 			return true

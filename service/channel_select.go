@@ -2,27 +2,59 @@ package service
 
 import (
 	"errors"
+	"math"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 )
 
 type RetryParam struct {
-	Ctx                *gin.Context
-	TokenGroup         string
-	ModelName          string
-	RequestPath        string
-	TokenId            int
-	Retry              *int
-	ExcludedChannelIds map[int]struct{}
-	resetNextTry       bool
+	Ctx                    *gin.Context
+	TokenGroup             string
+	ModelName              string
+	RequestPath            string
+	TokenId                int
+	Retry                  *int
+	ExcludedChannelIds     map[int]struct{}
+	UseSoftFailureCooldown bool
+	resetNextTry           bool
 }
 
 var ErrNoUntriedChannel = errors.New("no untried channel")
+
+// ErrAllChannelsCooling distinguishes temporary cooldown exhaustion from an
+// ordinary lack of eligible channels.
+var ErrAllChannelsCooling = errors.New("all eligible channels are cooling down")
+
+// AllChannelsCoolingError carries the earliest time at which selection can be retried.
+type AllChannelsCoolingError struct {
+	earliestExpiresAt time.Time
+}
+
+func (e *AllChannelsCoolingError) Error() string {
+	return ErrAllChannelsCooling.Error()
+}
+
+func (e *AllChannelsCoolingError) Unwrap() error {
+	return ErrAllChannelsCooling
+}
+
+func (e *AllChannelsCoolingError) RetryAfterSeconds() int {
+	if e == nil {
+		return 1
+	}
+	seconds := int(math.Ceil(time.Until(e.earliestExpiresAt).Seconds()))
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
 
 func (p *RetryParam) GetRetry() int {
 	if p.Retry == nil {
@@ -62,6 +94,39 @@ func (p *RetryParam) ExcludeChannel(channelId int) {
 
 func (p *RetryParam) HasExcludedChannels() bool {
 	return len(p.ExcludedChannelIds) > 0
+}
+
+func getRandomSatisfiedChannelSkippingSoftCooldown(param *RetryParam, group string, retry int, excludedChannelIds map[int]struct{}) (*model.Channel, map[int]struct{}, time.Time, error) {
+	if !operation_setting.IsSoftFailureCooldownEnabled() {
+		channel, err := model.GetRandomSatisfiedChannelExcluding(group, param.ModelName, retry, param.RequestPath, param.TokenId, excludedChannelIds)
+		return channel, excludedChannelIds, time.Time{}, err
+	}
+
+	localExcludedChannelIds := excludedChannelIds
+	copiedExclusions := false
+	var earliestExpiresAt time.Time
+	for {
+		channel, err := model.GetRandomSatisfiedChannelExcluding(group, param.ModelName, retry, param.RequestPath, param.TokenId, localExcludedChannelIds)
+		if err != nil || channel == nil {
+			return channel, localExcludedChannelIds, earliestExpiresAt, err
+		}
+
+		entry, cooling := GetChannelSoftCooldown(channel.Id, param.ModelName)
+		if !cooling {
+			return channel, localExcludedChannelIds, earliestExpiresAt, nil
+		}
+		if earliestExpiresAt.IsZero() || entry.ExpiresAt.Before(earliestExpiresAt) {
+			earliestExpiresAt = entry.ExpiresAt
+		}
+		if !copiedExclusions {
+			localExcludedChannelIds = make(map[int]struct{}, len(excludedChannelIds)+1)
+			for channelID := range excludedChannelIds {
+				localExcludedChannelIds[channelID] = struct{}{}
+			}
+			copiedExclusions = true
+		}
+		localExcludedChannelIds[channel.Id] = struct{}{}
+	}
 }
 
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
@@ -104,6 +169,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	var err error
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
+	useSoftFailureCooldown := param.UseSoftFailureCooldown && operation_setting.IsSoftFailureCooldownEnabled()
+	cooldownExcludedChannelIds := param.ExcludedChannelIds
+	var earliestCooldownExpiry time.Time
 
 	if param.TokenGroup == "auto" {
 		if len(setting.GetAutoGroups()) == 0 {
@@ -134,7 +202,15 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannelExcluding(autoGroup, param.ModelName, priorityRetry, param.RequestPath, param.TokenId, param.ExcludedChannelIds)
+			if useSoftFailureCooldown {
+				var groupEarliestExpiry time.Time
+				channel, cooldownExcludedChannelIds, groupEarliestExpiry, _ = getRandomSatisfiedChannelSkippingSoftCooldown(param, autoGroup, priorityRetry, cooldownExcludedChannelIds)
+				if !groupEarliestExpiry.IsZero() && (earliestCooldownExpiry.IsZero() || groupEarliestExpiry.Before(earliestCooldownExpiry)) {
+					earliestCooldownExpiry = groupEarliestExpiry
+				}
+			} else {
+				channel, _ = model.GetRandomSatisfiedChannelExcluding(autoGroup, param.ModelName, priorityRetry, param.RequestPath, param.TokenId, param.ExcludedChannelIds)
+			}
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -174,10 +250,17 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelExcluding(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, param.TokenId, param.ExcludedChannelIds)
+		if useSoftFailureCooldown {
+			channel, cooldownExcludedChannelIds, earliestCooldownExpiry, err = getRandomSatisfiedChannelSkippingSoftCooldown(param, param.TokenGroup, param.GetRetry(), cooldownExcludedChannelIds)
+		} else {
+			channel, err = model.GetRandomSatisfiedChannelExcluding(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, param.TokenId, param.ExcludedChannelIds)
+		}
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
+	}
+	if channel == nil && !earliestCooldownExpiry.IsZero() {
+		return nil, selectGroup, &AllChannelsCoolingError{earliestExpiresAt: earliestCooldownExpiry}
 	}
 	if channel == nil && param.HasExcludedChannels() {
 		return nil, selectGroup, ErrNoUntriedChannel

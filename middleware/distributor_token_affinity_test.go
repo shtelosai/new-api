@@ -10,8 +10,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -73,11 +76,11 @@ func seedDistributorChannel(t *testing.T, id int, modelName string, priority int
 	}).Error)
 }
 
-func seedAffinityChannel(t *testing.T, modelName string, usingGroup string, affinityKey string, channelID int) {
+func seedAffinityChannelForRequest(t *testing.T, requestPath string, requestBody string, modelName string, usingGroup string, channelID int) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":"%s","prompt_cache_key":"%s"}`, modelName, affinityKey)))
+	ctx.Request = httptest.NewRequest(http.MethodPost, requestPath, strings.NewReader(requestBody))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	_, found := service.GetPreferredChannelByAffinity(ctx, modelName, usingGroup)
 	require.False(t, found)
@@ -87,7 +90,24 @@ func seedAffinityChannel(t *testing.T, modelName string, usingGroup string, affi
 	})
 }
 
-func requestDistributedChannel(t *testing.T, tokenID int, usingGroup string, affinityKey string, status int) int {
+func seedAffinityChannel(t *testing.T, modelName string, usingGroup string, affinityKey string, channelID int) {
+	t.Helper()
+	seedAffinityChannelForRequest(
+		t,
+		"/v1/responses",
+		fmt.Sprintf(`{"model":"%s","prompt_cache_key":"%s"}`, modelName, affinityKey),
+		modelName,
+		usingGroup,
+		channelID,
+	)
+}
+
+type distributedChannelPayload struct {
+	ChannelID int  `json:"channel_id"`
+	SkipRetry bool `json:"skip_retry"`
+}
+
+func requestDistributedChannelForRequest(t *testing.T, tokenID int, usingGroup string, requestPath string, requestBody string, status int, setup func(*gin.Context)) distributedChannelPayload {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -95,31 +115,60 @@ func requestDistributedChannel(t *testing.T, tokenID int, usingGroup string, aff
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
 		common.SetContextKey(c, constant.ContextKeyTokenId, tokenID)
+		if setup != nil {
+			setup(c)
+		}
 	})
 	router.Use(Distribute())
-	router.POST("/v1/responses", func(c *gin.Context) {
-		c.JSON(status, gin.H{"channel_id": c.GetInt("channel_id")})
+	router.POST(requestPath, func(c *gin.Context) {
+		c.JSON(status, gin.H{
+			"channel_id": c.GetInt("channel_id"),
+			"skip_retry": service.ShouldSkipRetryAfterChannelAffinityFailure(c),
+		})
 	})
 
-	body := strings.NewReader(fmt.Sprintf(`{"model":"gpt-5","prompt_cache_key":"%s"}`, affinityKey))
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", body)
+	req := httptest.NewRequest(http.MethodPost, requestPath, strings.NewReader(requestBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, status, rec.Code)
-	var payload struct {
-		ChannelID int `json:"channel_id"`
-	}
+	var payload distributedChannelPayload
 	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &payload))
+	return payload
+}
+
+func requestDistributedChannel(t *testing.T, tokenID int, usingGroup string, affinityKey string, status int) int {
+	t.Helper()
+	payload := requestDistributedChannelForRequest(
+		t,
+		tokenID,
+		usingGroup,
+		"/v1/responses",
+		fmt.Sprintf(`{"model":"gpt-5","prompt_cache_key":"%s"}`, affinityKey),
+		status,
+		nil,
+	)
 	return payload.ChannelID
 }
 
 func assertAffinityStillPointsTo(t *testing.T, modelName string, usingGroup string, affinityKey string, channelID int) {
 	t.Helper()
+	assertAffinityStillPointsToForRequest(
+		t,
+		"/v1/responses",
+		fmt.Sprintf(`{"model":"%s","prompt_cache_key":"%s"}`, modelName, affinityKey),
+		modelName,
+		usingGroup,
+		channelID,
+	)
+}
+
+func assertAffinityStillPointsToForRequest(t *testing.T, requestPath string, requestBody string, modelName string, usingGroup string, channelID int) {
+	t.Helper()
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":"%s","prompt_cache_key":"%s"}`, modelName, affinityKey)))
+	ctx.Request = httptest.NewRequest(http.MethodPost, requestPath, strings.NewReader(requestBody))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	got, found := service.GetPreferredChannelByAffinity(ctx, modelName, usingGroup)
@@ -157,4 +206,183 @@ func TestDistributeAffinityHonorsTokenWhitelist(t *testing.T) {
 	assert.Equal(t, 4101, requestDistributedChannel(t, 903, "default", affinityKey, http.StatusUnavailableForLegalReasons))
 	assert.Equal(t, 4102, requestDistributedChannel(t, 902, "auto", affinityKey, http.StatusUnavailableForLegalReasons))
 	assertAffinityStillPointsTo(t, modelName, "auto", affinityKey, 4101)
+}
+
+func setupDistributorSoftCooldown(t *testing.T, enabled bool, seconds int) {
+	t.Helper()
+	setting := operation_setting.GetChannelHealthSetting()
+	originalSetting := *setting
+	originalRedisEnabled := common.RedisEnabled
+	setting.SoftFailureCooldownEnabled = enabled
+	setting.SoftFailureCooldownSeconds = seconds
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		*setting = originalSetting
+		common.RedisEnabled = originalRedisEnabled
+	})
+}
+
+func assertClaudeAffinityMissing(t *testing.T, modelName string, usingGroup string, affinityKey string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	_, found := service.GetPreferredChannelByAffinity(ctx, modelName, usingGroup)
+	assert.False(t, found)
+}
+
+func TestDistributeClaudeAffinityCoolingDeletesBindingAndFallsBack(t *testing.T) {
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+	affinitySetting := operation_setting.GetChannelAffinitySetting()
+	originalRules := affinitySetting.Rules
+	affinitySetting.Rules = append([]operation_setting.ChannelAffinityRule(nil), originalRules...)
+	for i := range affinitySetting.Rules {
+		if affinitySetting.Rules[i].Name == "claude cli trace" {
+			affinitySetting.Rules[i].SkipRetryOnFailure = true
+		}
+	}
+	t.Cleanup(func() { affinitySetting.Rules = originalRules })
+	modelName := "claude-affinity-cooldown"
+	affinityKey := fmt.Sprintf("claude-affinity-%d", time.Now().UnixNano())
+	highPriority := int64(10)
+	lowPriority := int64(0)
+	seedDistributorChannel(t, 4201, modelName, highPriority)
+	seedDistributorChannel(t, 4202, modelName, lowPriority)
+	model.InitChannelCache()
+
+	body := fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)
+	seedAffinityChannelForRequest(t, "/v1/messages", body, modelName, "default", 4201)
+	service.RecordChannelSoftCooldown(4201, modelName, 529, "overloaded_error")
+
+	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusUnavailableForLegalReasons, nil)
+
+	assert.Equal(t, 4202, payload.ChannelID)
+	assert.True(t, payload.SkipRetry, "删除冷却 affinity 绑定不能改写本次请求原有的 skip-retry 策略")
+	assertClaudeAffinityMissing(t, modelName, "default", affinityKey)
+}
+
+func TestDistributeSoftCooldownDisabledKeepsClaudeAffinity(t *testing.T) {
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+	modelName := "claude-affinity-cooldown-disabled"
+	affinityKey := fmt.Sprintf("claude-affinity-disabled-%d", time.Now().UnixNano())
+	highPriority := int64(10)
+	lowPriority := int64(0)
+	seedDistributorChannel(t, 4211, modelName, highPriority)
+	seedDistributorChannel(t, 4212, modelName, lowPriority)
+	model.InitChannelCache()
+
+	body := fmt.Sprintf(`{"model":"%s","metadata":{"user_id":"%s"}}`, modelName, affinityKey)
+	seedAffinityChannelForRequest(t, "/v1/messages", body, modelName, "default", 4211)
+	service.RecordChannelSoftCooldown(4211, modelName, 529, "overloaded_error")
+	operation_setting.GetChannelHealthSetting().SoftFailureCooldownEnabled = false
+
+	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusUnavailableForLegalReasons, nil)
+
+	assert.Equal(t, 4211, payload.ChannelID)
+	assertAffinityStillPointsToForRequest(t, "/v1/messages", body, modelName, "default", 4211)
+}
+
+func TestDistributeNonClaudeRequestIgnoresSoftCooldown(t *testing.T) {
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+	modelName := "gpt-5"
+	affinityKey := fmt.Sprintf("responses-cooldown-%d", time.Now().UnixNano())
+	highPriority := int64(10)
+	lowPriority := int64(0)
+	seedDistributorChannel(t, 4221, modelName, highPriority)
+	seedDistributorChannel(t, 4222, modelName, lowPriority)
+	model.InitChannelCache()
+	seedAffinityChannel(t, modelName, "default", affinityKey, 4221)
+	service.RecordChannelSoftCooldown(4221, modelName, 529, "overloaded_error")
+
+	selected := requestDistributedChannel(t, 0, "default", affinityKey, http.StatusUnavailableForLegalReasons)
+
+	assert.Equal(t, 4221, selected)
+	assertAffinityStillPointsTo(t, modelName, "default", affinityKey, 4221)
+}
+
+func TestDistributeSpecificChannelBypassesSoftCooldown(t *testing.T) {
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+	modelName := "claude-specific-cooldown"
+	priority := int64(10)
+	seedDistributorChannel(t, 4231, modelName, priority)
+	model.InitChannelCache()
+	service.RecordChannelSoftCooldown(4231, modelName, 529, "overloaded_error")
+	body := fmt.Sprintf(`{"model":"%s"}`, modelName)
+
+	payload := requestDistributedChannelForRequest(t, 0, "default", "/v1/messages", body, http.StatusUnavailableForLegalReasons, func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenSpecificChannelId, "4231")
+	})
+
+	assert.Equal(t, 4231, payload.ChannelID)
+}
+
+func TestDistributeAllClaudeChannelsCoolingReturnsRetryAfter(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+	modelName := "claude-all-cooling"
+	highPriority := int64(10)
+	lowPriority := int64(0)
+	seedDistributorChannel(t, 4241, modelName, highPriority)
+	seedDistributorChannel(t, 4242, modelName, lowPriority)
+	model.InitChannelCache()
+	service.RecordChannelSoftCooldown(4241, modelName, 529, "overloaded_error")
+	service.RecordChannelSoftCooldown(4242, modelName, 529, "overloaded_error")
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+	})
+	router.Use(Distribute())
+	router.POST("/v1/messages", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":"%s"}`, modelName)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "30", rec.Header().Get("Retry-After"))
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &payload))
+	assert.Equal(t, string(types.ErrorCodeModelNotFound), payload.Error.Code)
+}
+
+func TestDistributeClaudeWithoutCandidatesDoesNotSetRetryAfter(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	setupDistributorTokenAffinityDB(t)
+	setupDistributorSoftCooldown(t, true, 30)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+	})
+	router.Use(Distribute())
+	router.POST("/v1/messages", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-no-candidates"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Empty(t, rec.Header().Get("Retry-After"))
 }

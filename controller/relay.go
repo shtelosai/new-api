@@ -99,6 +99,42 @@ func writeRelayError(c *gin.Context, relayFormat types.RelayFormat, newAPIError 
 	})
 }
 
+func softFailureCooldownEnabledForRelay(c *gin.Context, relayFormat types.RelayFormat) bool {
+	if !operation_setting.IsSoftFailureCooldownEnabled() {
+		return false
+	}
+	if relayFormat != types.RelayFormatClaude || c == nil {
+		return false
+	}
+	_, specificChannel := c.Get(string(constant.ContextKeyTokenSpecificChannelId))
+	return !specificChannel
+}
+
+func relayAttemptLimit(c *gin.Context, relayFormat types.RelayFormat) int {
+	// RetryTimes counts retries after the first request, while the cooldown
+	// setting is an attempt count. Preserve the larger existing budget.
+	currentLimit := common.RetryTimes + 1
+	if !softFailureCooldownEnabledForRelay(c, relayFormat) {
+		return currentLimit
+	}
+	return max(currentLimit, operation_setting.GetSoftFailureMaxAttempts())
+}
+
+func recordChannelSoftCooldownForRelay(c *gin.Context, relayFormat types.RelayFormat, relayInfo *relaycommon.RelayInfo, channelID int, modelName string, newAPIError *types.NewAPIError) {
+	if !softFailureCooldownEnabledForRelay(c, relayFormat) {
+		return
+	}
+	if relayInfo == nil || relayInfo.IsChannelTest || relayRequestContextDone(c) || !service.IsSoftModelHealthError(newAPIError) {
+		return
+	}
+
+	errorClass := strings.TrimSpace(newAPIError.ToOpenAIError().Type)
+	if errorClass == "" {
+		errorClass = string(newAPIError.GetErrorType())
+	}
+	service.RecordChannelSoftCooldown(channelID, modelName, newAPIError.StatusCode, errorClass)
+}
+
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	requestId := c.GetString(common.RequestIdKey)
@@ -218,8 +254,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	useSoftFailureCooldown := softFailureCooldownEnabledForRelay(c, relayFormat)
+	attemptLimit := relayAttemptLimit(c, relayFormat)
+	realAttempts := 0
+	retryParam.UseSoftFailureCooldown = useSoftFailureCooldown
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; (!useSoftFailureCooldown && retryParam.GetRetry() <= common.RetryTimes) || (useSoftFailureCooldown && realAttempts < attemptLimit); retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
@@ -227,6 +267,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = channelErr
 			break
 		}
+		realAttempts++
 
 		addUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -263,9 +304,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 
+		recordChannelSoftCooldownForRelay(c, relayFormat, relayInfo, channel.Id, relayInfo.OriginModelName, newAPIError)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		remainingRetries := common.RetryTimes - retryParam.GetRetry()
+		if useSoftFailureCooldown {
+			remainingRetries = attemptLimit - realAttempts
+		}
+		if !shouldRetry(c, newAPIError, remainingRetries) {
 			break
 		}
 		retryParam.ExcludeChannel(channel.Id)
@@ -344,7 +390,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
 
 	if err != nil {
-		if errors.Is(err, service.ErrNoUntriedChannel) && info.LastError != nil {
+		if (errors.Is(err, service.ErrNoUntriedChannel) || errors.Is(err, service.ErrAllChannelsCooling)) && info.LastError != nil {
 			return nil, info.LastError
 		}
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
