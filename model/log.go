@@ -66,6 +66,7 @@ type Log struct {
 	Username          string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
 	TokenName         string `json:"token_name" gorm:"index;default:''"`
 	TworkUsername     string `json:"twork_username,omitempty" gorm:"-"`
+	TworkOrgName      string `json:"twork_org_name,omitempty" gorm:"-"`
 	ModelName         string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
 	Quota             int    `json:"quota" gorm:"default:0"`
 	PromptTokens      int    `json:"prompt_tokens" gorm:"default:0"`
@@ -149,20 +150,24 @@ func fillLogTworkUsernames(logs []*Log) error {
 	var tokens []struct {
 		Id            int    `gorm:"column:id"`
 		TworkUsername string `gorm:"column:twork_username"`
+		TworkOrgName  string `gorm:"column:twork_org_name"`
 	}
 	if err := DB.Unscoped().Table("tokens").
-		Select("id, twork_username").
+		Select("id, twork_username, twork_org_name").
 		Where("id IN ?", tokenIds.Items()).
 		Find(&tokens).Error; err != nil {
 		return err
 	}
 
 	usernameByTokenId := make(map[int]string, len(tokens))
+	orgNameByTokenId := make(map[int]string, len(tokens))
 	for _, token := range tokens {
 		usernameByTokenId[token.Id] = token.TworkUsername
+		orgNameByTokenId[token.Id] = token.TworkOrgName
 	}
 	for _, log := range logs {
 		log.TworkUsername = usernameByTokenId[log.TokenId]
+		log.TworkOrgName = orgNameByTokenId[log.TokenId]
 	}
 	return nil
 }
@@ -594,7 +599,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		}
 	}
 	if err := fillLogTworkUsernames(logs); err != nil {
-		common.SysError("failed to fill Twork usernames for logs: " + err.Error())
+		common.SysError("failed to fill Twork identity fields for logs: " + err.Error())
 	}
 
 	return logs, total, err

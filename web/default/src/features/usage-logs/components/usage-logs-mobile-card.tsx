@@ -353,6 +353,10 @@ function CommonLogsCard<TData>({
           label={t('Username')}
           cell={cells.get('twork_username')}
         />
+        <SummaryField
+          label={t('Organization')}
+          cell={cells.get('twork_org_name')}
+        />
         {rowData ? (
           <MobileStreamTimingField log={rowData} />
         ) : (

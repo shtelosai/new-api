@@ -636,6 +636,27 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       },
       size: 140,
     })
+    columns.push({
+      accessorKey: 'twork_org_name',
+      header: t('Organization'),
+      cell: function TworkOrgNameCell({ row }) {
+        const { sensitiveVisible } = useUsageLogsContext()
+        const orgName = row.original.twork_org_name
+        if (!orgName) {
+          return <span className='text-muted-foreground/40'>—</span>
+        }
+
+        return (
+          <span
+            className='text-muted-foreground block max-w-[140px] truncate text-sm'
+            title={sensitiveVisible ? orgName : undefined}
+          >
+            {sensitiveVisible ? orgName : '••••'}
+          </span>
+        )
+      },
+      size: 140,
+    })
   }
 
   columns.push(

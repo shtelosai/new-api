@@ -18,6 +18,7 @@ type Token struct {
 	Status             int            `json:"status" gorm:"default:1"`
 	Name               string         `json:"name" gorm:"index" `
 	TworkUsername      string         `json:"-" gorm:"size:100;default:''"`
+	TworkOrgName       string         `json:"-" gorm:"size:100;default:''"`
 	CreatedTime        int64          `json:"created_time" gorm:"bigint"`
 	AccessedTime       int64          `json:"accessed_time" gorm:"bigint"`
 	ExpiredTime        int64          `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
