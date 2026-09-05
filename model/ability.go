@@ -60,11 +60,11 @@ func GetAllEnableAbilities() []Ability {
 	return abilities
 }
 
-func getPriority(group string, model string, retry int) (int, error) {
+func getPriority(group string, model string, retry int, legacyIDs []int) (int, error) {
 
 	var priorities []int
 	priorityQuery := DB.Model(&Ability{}).
-		Select("DISTINCT(priority)").
+		Select("DISTINCT(priority)").Where("channel_id IN ?", legacyIDs).
 		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
 	err := excludeDisabledChannelModels(priorityQuery).
 		Order("priority DESC").              // 按优先级降序排序
@@ -97,11 +97,11 @@ func excludeDisabledChannelModels(query *gorm.DB) *gorm.DB {
 	)
 }
 
-func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
-	maxPrioritySubQuery := excludeDisabledChannelModels(DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true))
+func getChannelQuery(group string, model string, retry int, legacyIDs []int) (*gorm.DB, error) {
+	maxPrioritySubQuery := excludeDisabledChannelModels(DB.Model(&Ability{}).Select("MAX(priority)").Where("channel_id IN ?", legacyIDs).Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true))
 	channelQuery := excludeDisabledChannelModels(DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery))
 	if retry != 0 {
-		priority, err := getPriority(group, model, retry)
+		priority, err := getPriority(group, model, retry, legacyIDs)
 		if err != nil {
 			return nil, err
 		} else {
@@ -109,7 +109,7 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 		}
 	}
 
-	return channelQuery, nil
+	return channelQuery.Where("channel_id IN ?", legacyIDs), nil
 }
 
 func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
@@ -118,11 +118,17 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 
 func GetChannelExcluding(group string, model string, retry int, requestPath string, excludedChannelIds map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
+	legacyIDs, err := legacyChannelIDs(group, model)
+	if err != nil {
+		return nil, err
+	}
+	if len(legacyIDs) == 0 {
+		return nil, nil
+	}
 
-	var err error = nil
 	var channelQuery *gorm.DB
 	if len(excludedChannelIds) == 0 {
-		channelQuery, err = getChannelQuery(group, model, retry)
+		channelQuery, err = getChannelQuery(group, model, retry, legacyIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -134,7 +140,7 @@ func GetChannelExcluding(group string, model string, retry int, requestPath stri
 		channelQuery = excludeDisabledChannelModels(DB.Where(
 			commonGroupCol+" = ? and model = ? and enabled = ? and channel_id NOT IN ?",
 			group, model, true, excludedIds,
-		))
+		).Where("channel_id IN ?", legacyIDs))
 	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) || common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
 		err = channelQuery.Order("weight DESC").Find(&abilities).Error

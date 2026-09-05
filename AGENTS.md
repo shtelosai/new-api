@@ -111,6 +111,12 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - Preserve explicit zero values in upstream relay request DTOs: absent client JSON fields must become `nil` and be omitted, while explicit `0`, `0.0`, or `false` values must remain non-`nil` and be sent upstream.
 - Avoid non-pointer scalars with `omitempty` for optional request parameters, because zero values will be silently dropped during marshal.
 
+**Twork 运行方式隔离：**
+
+- `channels.setting.twork_runtime` 缺省、空字符串或 `legacy` 保持旧选路；`codex` 仅供显式授权的 Responses 请求。标记重复、大小写/转义变体、坏 JSON、未知值和 null 必须拒绝，读取设置不得清空并保存损坏配置。
+- 普通选路（含粘性、重试、关闭内存缓存和管理员令牌渠道后缀）必须排除专用渠道。显式请求须带正整数 `X-Twork-Channel-Id`、`model-routes-v1` 能力与严格 SemVer 正式版 `>=4.0.0`，仅允许 `/v1/responses` 和 `/v1/responses/compact`。
+- 显式请求的顶层 `model` 必须是唯一且规范的字符串键，不得重序列化原始透传体；显式渠道每次直查真实 `token_model_channels` 授权、渠道模型声明与启用/模型禁用状态；空缓存、无授权及管理员身份均不能放行。固定渠道不得重试或回退；compact 按请求原始模型鉴权，保留既有计费后缀并检查两种模型禁用名。
+
 **Model health & disable/recovery invariants:**
 
 - Model-level disable lives in `channel_model_disabled` (PK channel_id+model, source ∈ auto/relay/manual). Automatic recovery (probe or manual test success) only ever deletes `source IN ('auto','relay')`; `manual` is a hard lock — relay failures must NOT overwrite it (`UpsertChannelModelDisabledPreservingManual`), and the only way to remove it is the explicit admin action `DELETE /api/channel/model-disabled` (permission `ChannelOperate`, precise audit `channel.model_disabled_clear`).

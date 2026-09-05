@@ -303,10 +303,10 @@ func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, r
 // filterChannelsByRequestPathAndModel restricts candidates by request path and
 // model. Only Advanced Custom (type 58) channels are path-checked: they are kept
 // only when one of their configured routes matches requestPath and model. All
-// other channel types always pass. When requestPath is empty, filtering is skipped.
+// 旧请求始终排除专用或损坏配置的渠道；空 requestPath 仅跳过路径过滤。
 // Caller must hold channelSyncLock (read lock). The cached slice is never mutated.
 func filterChannelsByRequestPathAndModel(channels []int, requestPath string, model string) []int {
-	if requestPath == "" || len(channels) == 0 {
+	if len(channels) == 0 {
 		return channels
 	}
 	filtered := make([]int, 0, len(channels))
@@ -317,7 +317,10 @@ func filterChannelsByRequestPathAndModel(channels []int, requestPath string, mod
 			filtered = append(filtered, channelId)
 			continue
 		}
-		if channel.Type != constant.ChannelTypeAdvancedCustom {
+		if !channel.AllowsLegacyRuntime() {
+			continue
+		}
+		if requestPath == "" || channel.Type != constant.ChannelTypeAdvancedCustom {
 			filtered = append(filtered, channelId)
 			continue
 		}

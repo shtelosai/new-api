@@ -48,22 +48,42 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
-		if ok {
-			id, err := strconv.Atoi(channelId.(string))
-			if err != nil {
-				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
+
+		routeID, explicitRoute, routeErr := parseTworkChannelRoute(c.Request)
+		if routeErr != nil || (explicitRoute && ok) {
+			message := "不能同时使用令牌渠道后缀与显式渠道请求头"
+			if routeErr != nil {
+				message = routeErr.Error()
+			}
+			abortWithOpenAiMessage(c, http.StatusBadRequest, message)
+			return
+		}
+		routeModelName := modelRequest.Model
+
+		if explicitRoute {
+			storage, bodyErr := common.GetBodyStorage(c)
+			if bodyErr != nil {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "无法读取显式渠道请求体")
 				return
 			}
-			channel, err = model.GetChannelById(id, true)
-			if err != nil {
-				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
+			raw, bodyErr := storage.Bytes()
+			if bodyErr != nil {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "无法读取显式渠道请求体")
 				return
 			}
-			if channel.Status != common.ChannelStatusEnabled {
-				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
+			requestedModel, present, modelErr := common.CanonicalJSONStringField(raw, "model")
+			if modelErr != nil || !present || requestedModel == "" {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "显式渠道请求必须包含唯一且规范的 model 字符串字段")
 				return
 			}
-		} else {
+			if _, bodyErr = storage.Seek(0, io.SeekStart); bodyErr != nil {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "无法读取显式渠道请求体")
+				return
+			}
+			c.Request.Body = io.NopCloser(storage)
+			routeModelName = requestedModel
+		}
+		if !ok {
 			// Select a channel for the user
 			// check token model mapping
 			modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
@@ -79,13 +99,47 @@ func Distribute() func(c *gin.Context) {
 				if !ok {
 					tokenModelLimit = map[string]bool{}
 				}
-				matchName := ratio_setting.FormatMatchingModelName(modelRequest.Model) // match gpts & thinking-*
+				matchName := ratio_setting.FormatMatchingModelName(routeModelName) // match gpts & thinking-*
 				if _, ok := tokenModelLimit[matchName]; !ok {
 					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
 					return
 				}
 			}
-
+		}
+		if explicitRoute {
+			channel, err = model.GetAuthorizedTworkChannel(c.Request.Context(), c.GetInt(string(constant.ContextKeyTokenId)), routeModelName, routeID, modelRequest.Model)
+			if err != nil {
+				status := http.StatusServiceUnavailable
+				message := i18n.T(c, i18n.MsgDatabaseError)
+				if errors.Is(err, model.ErrTworkRouteDenied) {
+					status = http.StatusForbidden
+					message = err.Error()
+				}
+				abortWithOpenAiMessage(c, status, message)
+				return
+			}
+			if !channelSupportsRequestPath(channel, c.Request.URL.Path, routeModelName) {
+				abortWithOpenAiMessage(c, http.StatusForbidden, model.ErrTworkRouteDenied.Error())
+				return
+			}
+			common.SetContextKey(c, constant.ContextKeyTokenSpecificChannelId, strconv.Itoa(routeID))
+			common.SetContextKey(c, constant.ContextKeyTworkExplicitChannelRoute, true)
+		} else if ok {
+			id, err := strconv.Atoi(channelId.(string))
+			if err != nil {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
+				return
+			}
+			channel, err = model.GetChannelById(id, true)
+			if err != nil {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
+				return
+			}
+			if channel.Status != common.ChannelStatusEnabled || !channel.AllowsLegacyRuntime() {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
+				return
+			}
+		} else {
 			if shouldSelectChannel {
 				if modelRequest.Model == "" {
 					abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorModelNameRequired))
@@ -118,7 +172,7 @@ func Distribute() func(c *gin.Context) {
 					rejectedByCooldown := false
 					tokenID := c.GetInt(string(constant.ContextKeyTokenId))
 					preferred, err := model.CacheGetChannel(preferredChannelID)
-					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
+					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && preferred.AllowsLegacyRuntime() &&
 						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
@@ -202,7 +256,11 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		if explicitRoute && setupErr != nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, setupErr.Error())
+			return
+		}
 		c.Next()
 		if useSoftFailureCooldown {
 			if channel != nil && c.Writer != nil && common.GetContextKeyBool(c, constant.ContextKeyClaudeRelaySucceeded) {

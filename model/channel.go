@@ -967,6 +967,9 @@ func SearchTags(keyword string, group string, model string, idSort bool) ([]*str
 }
 
 func (channel *Channel) ValidateSettings() error {
+	if _, err := channel.TworkRuntime(); err != nil {
+		return err
+	}
 	channelParams := &dto.ChannelSettings{}
 	if channel.Setting != nil && *channel.Setting != "" {
 		err := common.Unmarshal([]byte(*channel.Setting), channelParams)
@@ -1000,8 +1003,7 @@ func (channel *Channel) GetSetting() dto.ChannelSettings {
 		err := common.Unmarshal([]byte(*channel.Setting), &setting)
 		if err != nil {
 			common.SysLog(fmt.Sprintf("failed to unmarshal setting: channel_id=%d, error=%v", channel.Id, err))
-			channel.Setting = nil // 清空设置以避免后续错误
-			_ = channel.Save()    // 保存修改
+			// 保留损坏配置，不能在读取时清除运行方式隔离标记。
 		}
 	}
 	return setting

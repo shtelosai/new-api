@@ -3,7 +3,11 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 func Unmarshal(data []byte, v any) error {
@@ -58,4 +62,28 @@ func JsonRawMessageToString(data json.RawMessage) string {
 		return string(trimmed)
 	}
 	return value
+}
+
+// CanonicalJSONStringField 读取鉴权字段，拒绝重复、大小写或转义变体，避免不同解析器得到不同身份。
+func CanonicalJSONStringField(data []byte, field string) (string, bool, error) {
+	root := gjson.ParseBytes(data)
+	if !gjson.ValidBytes(data) || !root.IsObject() {
+		return "", false, fmt.Errorf("JSON 请求或配置必须是合法对象")
+	}
+	var value string
+	present := false
+	var fieldErr error
+	root.ForEach(func(key, candidate gjson.Result) bool {
+		if !strings.EqualFold(key.String(), field) {
+			return true
+		}
+		if present || key.String() != field || key.Raw != `"`+field+`"` || candidate.Type != gjson.String {
+			fieldErr = fmt.Errorf("字段 %s 必须是唯一且规范的字符串键", field)
+			return false
+		}
+		value = candidate.String()
+		present = true
+		return true
+	})
+	return value, present, fieldErr
 }

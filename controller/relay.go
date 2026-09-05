@@ -396,7 +396,7 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
-	if info.ChannelMeta == nil {
+	if info.ChannelMeta == nil || common.GetContextKeyBool(c, constant.ContextKeyTworkExplicitChannelRoute) {
 		autoBan := c.GetBool("auto_ban")
 		autoBanInt := 1
 		if !autoBan {
@@ -435,6 +435,9 @@ func relayRequestContextDone(c *gin.Context) bool {
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+	if common.GetContextKeyBool(c, constant.ContextKeyTworkExplicitChannelRoute) {
+		return false
+	}
 	if relayRequestContextDone(c) {
 		return false
 	}

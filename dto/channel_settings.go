@@ -11,6 +11,7 @@ import (
 )
 
 type ChannelSettings struct {
+	TworkRuntime           string `json:"twork_runtime,omitempty"`
 	ForceFormat            bool   `json:"force_format,omitempty"`
 	ThinkingToContent      bool   `json:"thinking_to_content,omitempty"`
 	Proxy                  string `json:"proxy"`
