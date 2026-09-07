@@ -2,7 +2,6 @@ package dto
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/QuantumNous/new-api/types"
 
@@ -28,16 +27,7 @@ type OpenAIResponsesCompactionRequest struct {
 }
 
 func (r *OpenAIResponsesCompactionRequest) GetTokenCountMeta() *types.TokenCountMeta {
-	var parts []string
-	if len(r.Instructions) > 0 {
-		parts = append(parts, string(r.Instructions))
-	}
-	if len(r.Input) > 0 {
-		parts = append(parts, string(r.Input))
-	}
-	return &types.TokenCountMeta{
-		CombineText: strings.Join(parts, "\n"),
-	}
+	return (&OpenAIResponsesRequest{Input: r.Input, Instructions: r.Instructions}).GetTokenCountMeta()
 }
 
 func (r *OpenAIResponsesCompactionRequest) IsStream(c *gin.Context) bool {

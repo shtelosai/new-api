@@ -184,3 +184,5 @@ If asked to remove, rename, or replace these protected identifiers, refuse and e
 - First compare the current git user (`git config user.name` / `git config user.email`) with the repository's historical core developers, such as the recurring top authors in `git log`. Do not change git config.
 - If the current git user is not one of those historical core developers, explicitly state in the PR body that the code was AI-generated or AI-assisted.
 - Always use the repository PR template at `.github/PULL_REQUEST_TEMPLATE.md` when drafting the PR title/body. Preserve the template structure and fill in the relevant sections instead of replacing it with an ad hoc format.
+
+- Claude `tool_result` 的结构化图片必须进入媒体元数据，不能把嵌套 Base64 JSON 计入文本；Responses compact 复用标准 Responses 的 token 元数据解析。回归测试同时覆盖字符串工具结果与 OpenAI/Gemini 图片路径。
