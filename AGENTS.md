@@ -113,8 +113,12 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 
 **Twork 运行方式隔离：**
 
+- Pi 渠道必须同时配置 `twork_runtime="pi"` 与 `twork_wire_api="responses"|"chat_completions"`；两键均严格解析。legacy 不允许协议键；旧 codex 仅兼容 Responses。
+- Pi 显式请求须正式客户端 `>=4.0.0` 与 `model-routes-v2`；按实际渠道协议核验 `/v1/responses`（含 compact）或 `/v1/chat/completions`，不跨协议/渠道回退。v1 不得进入 Pi 渠道；旧 codex 在 v1/v2 均仅支持 Responses。
+
+
 - `channels.setting.twork_runtime` 缺省、空字符串或 `legacy` 保持旧选路；`codex` 仅供显式授权的 Responses 请求。标记重复、大小写/转义变体、坏 JSON、未知值和 null 必须拒绝，读取设置不得清空并保存损坏配置。
-- 普通选路（含粘性、重试、关闭内存缓存和管理员令牌渠道后缀）必须排除专用渠道。显式请求须带正整数 `X-Twork-Channel-Id`、`model-routes-v1` 能力与严格 SemVer 正式版 `>=4.0.0`，仅允许 `/v1/responses` 和 `/v1/responses/compact`。
+- 普通选路（含粘性、重试、关闭内存缓存和管理员令牌渠道后缀）必须排除专用渠道。旧 codex 显式请求须带正整数 `X-Twork-Channel-Id`、`model-routes-v1` 或 v2 能力与严格 SemVer 正式版 `>=4.0.0`，仅允许 `/v1/responses` 和 `/v1/responses/compact`；Pi 使用上述 v2 协议约束。
 - 显式请求的顶层 `model` 必须是唯一且规范的字符串键，不得重序列化原始透传体；显式渠道每次直查真实 `token_model_channels` 授权、渠道模型声明与启用/模型禁用状态；空缓存、无授权及管理员身份均不能放行。固定渠道不得重试或回退；compact 按请求原始模型鉴权，保留既有计费后缀并检查两种模型禁用名。
 
 **Model health & disable/recovery invariants:**

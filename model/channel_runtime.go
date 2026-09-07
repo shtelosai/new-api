@@ -20,18 +20,49 @@ func (channel *Channel) TworkRuntime() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	wire, wirePresent, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_wire_api")
+	if err != nil {
+		return "", err
+	}
 	var settings dto.ChannelSettings
 	if err := common.UnmarshalJsonStr(*channel.Setting, &settings); err != nil {
 		return "", err
 	}
 	switch runtime {
 	case "", "legacy":
+		if wirePresent {
+			return "", errors.New("原有渠道不能配置 twork_wire_api")
+		}
 		return "legacy", nil
 	case "codex":
+		if wirePresent && wire != "responses" {
+			return "", errors.New("旧 Codex 标记仅兼容 Responses")
+		}
 		return "codex", nil
+	case "pi":
+		if wire != "responses" && wire != "chat_completions" {
+			return "", errors.New("Pi 渠道必须指定有效的 twork_wire_api")
+		}
+		return "pi", nil
 	default:
 		return "", errors.New("不支持的 twork_runtime")
 	}
+}
+
+// TworkWireAPI 的返回值只能来自已经完整校验的渠道设置。
+func (channel *Channel) TworkWireAPI() (string, error) {
+	runtime, err := channel.TworkRuntime()
+	if err != nil {
+		return "", err
+	}
+	if runtime == "codex" {
+		return "responses", nil
+	}
+	if runtime != "pi" {
+		return "", nil
+	}
+	wire, _, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_wire_api")
+	return wire, err
 }
 
 func (channel *Channel) AllowsLegacyRuntime() bool {
@@ -57,7 +88,7 @@ func GetAuthorizedTworkChannel(ctx context.Context, tokenID int, modelName strin
 		}
 		return nil, err
 	}
-	if runtime, err := channel.TworkRuntime(); err != nil || runtime != "codex" || channel.Status != common.ChannelStatusEnabled {
+	if runtime, err := channel.TworkRuntime(); err != nil || (runtime != "codex" && runtime != "pi") || channel.Status != common.ChannelStatusEnabled {
 		return nil, ErrTworkRouteDenied
 	}
 	declared := false

@@ -118,7 +118,7 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, status, message)
 				return
 			}
-			if !channelSupportsRequestPath(channel, c.Request.URL.Path, routeModelName) {
+			if !tworkChannelSupportsProtocol(c.Request, channel) || !channelSupportsRequestPath(channel, c.Request.URL.Path, routeModelName) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, model.ErrTworkRouteDenied.Error())
 				return
 			}

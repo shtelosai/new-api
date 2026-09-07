@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/QuantumNous/new-api/model"
 )
 
 var tworkVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
@@ -17,7 +19,7 @@ func parseTworkChannelRoute(request *http.Request) (int, bool, error) {
 	if !present {
 		return 0, false, nil
 	}
-	invalid := errors.New("显式渠道请求需要有效渠道 ID、model-routes-v1 能力和至少 4.0.0 的客户端版本，且仅支持 Responses 接口")
+	invalid := errors.New("显式渠道请求需要有效渠道 ID、匹配的 model-routes 能力和至少 4.0.0 的正式客户端版本")
 	if len(values) != 1 || !tworkChannelIDPattern.MatchString(values[0]) {
 		return 0, true, invalid
 	}
@@ -25,7 +27,7 @@ func parseTworkChannelRoute(request *http.Request) (int, bool, error) {
 	if err != nil {
 		return 0, true, invalid
 	}
-	if request.URL.Path != "/v1/responses" && request.URL.Path != "/v1/responses/compact" {
+	if request.URL.Path != "/v1/responses" && request.URL.Path != "/v1/responses/compact" && request.URL.Path != "/v1/chat/completions" {
 		return 0, true, invalid
 	}
 	versions := request.Header.Values("X-Twork-Client-Version")
@@ -42,10 +44,42 @@ func parseTworkChannelRoute(request *http.Request) (int, bool, error) {
 	if version[4] != "" {
 		return 0, true, invalid
 	}
+	routeVersion := tworkRouteCapabilityVersion(request)
+	if routeVersion == 0 || (request.URL.Path == "/v1/chat/completions" && routeVersion < 2) {
+		return 0, true, invalid
+	}
+	return id, true, nil
+}
+
+func tworkRouteCapabilityVersion(request *http.Request) int {
+	version := 0
 	for _, capability := range strings.Split(strings.Join(request.Header.Values("X-Twork-Client-Capabilities"), ","), ",") {
-		if strings.TrimSpace(capability) == "model-routes-v1" {
-			return id, true, nil
+		switch strings.TrimSpace(capability) {
+		case "model-routes-v2":
+			return 2
+		case "model-routes-v1":
+			version = 1
 		}
 	}
-	return 0, true, invalid
+	return version
+}
+
+// 配置与请求协议必须一致；v1 客户端不能借旧请求格式进入 Pi 渠道。
+func tworkChannelSupportsProtocol(request *http.Request, channel *model.Channel) bool {
+	runtime, err := channel.TworkRuntime()
+	if err != nil || (runtime == "pi" && tworkRouteCapabilityVersion(request) < 2) {
+		return false
+	}
+	wire, err := channel.TworkWireAPI()
+	if err != nil {
+		return false
+	}
+	switch wire {
+	case "responses":
+		return request.URL.Path == "/v1/responses" || request.URL.Path == "/v1/responses/compact"
+	case "chat_completions":
+		return request.URL.Path == "/v1/chat/completions"
+	default:
+		return false
+	}
 }
