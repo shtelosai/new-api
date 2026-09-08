@@ -112,6 +112,9 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - Avoid non-pointer scalars with `omitempty` for optional request parameters, because zero values will be silently dropped during marshal.
 
 **Twork 运行方式隔离：**
+- v3 模型级请求必须声明正式版 `>=4.0.0`、`model-routes-v3`、Pi 和匹配 wire API，禁止同时固定渠道。每次尝试直查正式 Token 模型/渠道授权、启用状态、模型禁用及协议，过滤先于优先级/权重；粘性也不能越过此候选集，重试排除已失败渠道。
+- 模型级请求每次从原始公开历史重建映射和 Pi 兼容参数，保留已有 OpenAI/原生渠道转换与参数覆盖；禁止携带渠道专属历史引用、恢复 ID 或加密压缩。兼容快照来自锁定 Pi SDK，同步脚本位于 Twork `packages/shared/scripts/sync-pi-gateway-compatibility.ts`。
+- 正式 4.x 请求排除非 Claude 的 Anthropic 渠道，旧协议仍沿用原缓存、粘性与重试路径；不能因版本头把所有旧请求切到数据库选路。模型级选路得到独立渠道对象，多密钥轮询仍必须在渠道锁内推进共享游标。
 
 - Pi 渠道必须同时配置 `twork_runtime="pi"` 与 `twork_wire_api="responses"|"chat_completions"`；两键均严格解析。legacy 不允许协议键；旧 codex 仅兼容 Responses。
 - Pi 显式请求须正式客户端 `>=4.0.0` 与 `model-routes-v2`；按实际渠道协议核验 `/v1/responses`（含 compact）或 `/v1/chat/completions`，不跨协议/渠道回退。v1 不得进入 Pi 渠道；旧 codex 在 v1/v2 均仅支持 Responses。

@@ -183,23 +183,23 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	return GetRandomSatisfiedChannelExcluding(group, model, retry, requestPath, tokenId, nil)
 }
 
-func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, requestPath string, tokenId int, excludedChannelIds map[int]struct{}) (*Channel, error) {
+func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, requestPath string, tokenId int, excludedChannelIds map[int]struct{}, policies ...TworkRoutePolicy) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	// 注意：非缓存模式下 token_model_channels 过滤不生效，生产环境应启用 MemoryCache。
 	if !common.MemoryCacheEnabled {
-		return GetChannelExcluding(group, model, retry, requestPath, excludedChannelIds)
+		return GetChannelExcluding(group, model, retry, requestPath, excludedChannelIds, policies...)
 	}
 
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
 	// First, try to find channels with the exact model name.
-	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
+	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model, policies...)
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
-		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model, policies...)
 	}
 
 	if len(channels) == 0 {
@@ -252,12 +252,10 @@ func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, r
 	targetPriority := int64(sortedUniquePriorities[retry])
 
 	// get the priority for the given retry number
-	var sumWeight = 0
 	var targetChannels []*Channel
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
 			if channel.GetPriority() == targetPriority {
-				sumWeight += channel.GetWeight()
 				targetChannels = append(targetChannels, channel)
 			}
 		} else {
@@ -269,6 +267,15 @@ func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, r
 		return nil, errors.New(fmt.Sprintf("no channel found, group: %s, model: %s, priority: %d", group, model, targetPriority))
 	}
 
+	return chooseChannelByWeight(targetChannels)
+}
+
+// 同优先级渠道沿用既有权重及全零权重的均匀分配规则。
+func chooseChannelByWeight(targetChannels []*Channel) (*Channel, error) {
+	sumWeight := 0
+	for _, channel := range targetChannels {
+		sumWeight += channel.GetWeight()
+	}
 	// smoothing factor and adjustment
 	smoothingFactor := 1
 	smoothingAdjustment := 0
@@ -305,7 +312,7 @@ func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, r
 // only when one of their configured routes matches requestPath and model. All
 // 旧请求始终排除专用或损坏配置的渠道；空 requestPath 仅跳过路径过滤。
 // Caller must hold channelSyncLock (read lock). The cached slice is never mutated.
-func filterChannelsByRequestPathAndModel(channels []int, requestPath string, model string) []int {
+func filterChannelsByRequestPathAndModel(channels []int, requestPath string, model string, policies ...TworkRoutePolicy) []int {
 	if len(channels) == 0 {
 		return channels
 	}
@@ -318,6 +325,9 @@ func filterChannelsByRequestPathAndModel(channels []int, requestPath string, mod
 			continue
 		}
 		if !channel.AllowsLegacyRuntime() {
+			continue
+		}
+		if len(policies) > 0 && policies[0].BlocksAnthropic(channel, model) {
 			continue
 		}
 		if requestPath == "" || channel.Type != constant.ChannelTypeAdvancedCustom {

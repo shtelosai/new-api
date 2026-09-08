@@ -116,9 +116,9 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 	return GetChannelExcluding(group, model, retry, requestPath, nil)
 }
 
-func GetChannelExcluding(group string, model string, retry int, requestPath string, excludedChannelIds map[int]struct{}) (*Channel, error) {
+func GetChannelExcluding(group string, model string, retry int, requestPath string, excludedChannelIds map[int]struct{}, policies ...TworkRoutePolicy) (*Channel, error) {
 	var abilities []Ability
-	legacyIDs, err := legacyChannelIDs(group, model)
+	legacyIDs, err := legacyChannelIDs(group, model, policies...)
 	if err != nil {
 		return nil, err
 	}

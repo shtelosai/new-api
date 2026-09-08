@@ -97,9 +97,29 @@ func (p *RetryParam) HasExcludedChannels() bool {
 	return len(p.ExcludedChannelIds) > 0
 }
 
+func (p *RetryParam) selectChannel(group string, retry int, excluded map[int]struct{}) (*model.Channel, error) {
+	policy, present := common.GetContextKeyType[model.TworkRoutePolicy](p.Ctx, constant.ContextKeyTworkRoutePolicy)
+	if !present || !policy.ModelRoute {
+		return model.GetRandomSatisfiedChannelExcluding(group, p.ModelName, retry, p.RequestPath, p.TokenId, excluded, policy)
+	}
+	name := p.ModelName
+	if policy.ModelRoute {
+		name = common.GetContextKeyString(p.Ctx, constant.ContextKeyTworkRouteModel)
+	}
+	preferredID := 0
+	if len(excluded) == 0 {
+		preferredID, _ = GetPreferredChannelByAffinity(p.Ctx, name, group)
+	}
+	channel, err := model.GetTworkRoutedChannel(p.Ctx.Request.Context(), group, name, p.TokenId, p.RequestPath, policy, excluded, preferredID)
+	if channel != nil && channel.Id == preferredID {
+		MarkChannelAffinityUsed(p.Ctx, group, channel.Id)
+	}
+	return channel, err
+}
+
 func getRandomSatisfiedChannelSkippingSoftCooldown(param *RetryParam, group string, retry int, excludedChannelIds map[int]struct{}) (*model.Channel, map[int]struct{}, time.Time, error) {
 	if !operation_setting.IsSoftFailureCooldownEnabled() {
-		channel, err := model.GetRandomSatisfiedChannelExcluding(group, param.ModelName, retry, param.RequestPath, param.TokenId, excludedChannelIds)
+		channel, err := param.selectChannel(group, retry, excludedChannelIds)
 		return channel, excludedChannelIds, time.Time{}, err
 	}
 
@@ -107,7 +127,7 @@ func getRandomSatisfiedChannelSkippingSoftCooldown(param *RetryParam, group stri
 	copiedExclusions := false
 	var earliestExpiresAt time.Time
 	for {
-		channel, err := model.GetRandomSatisfiedChannelExcluding(group, param.ModelName, retry, param.RequestPath, param.TokenId, localExcludedChannelIds)
+		channel, err := param.selectChannel(group, retry, localExcludedChannelIds)
 		if err != nil || channel == nil {
 			return channel, localExcludedChannelIds, earliestExpiresAt, err
 		}
@@ -212,7 +232,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 					earliestCooldownExpiry = groupEarliestExpiry
 				}
 			} else {
-				channel, _ = model.GetRandomSatisfiedChannelExcluding(autoGroup, param.ModelName, priorityRetry, param.RequestPath, param.TokenId, param.ExcludedChannelIds)
+				channel, _ = param.selectChannel(autoGroup, priorityRetry, param.ExcludedChannelIds)
 			}
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
@@ -256,7 +276,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		if useSoftFailureCooldown {
 			channel, cooldownExcludedChannelIds, earliestCooldownExpiry, err = getRandomSatisfiedChannelSkippingSoftCooldown(param, param.TokenGroup, param.GetRetry(), cooldownExcludedChannelIds)
 		} else {
-			channel, err = model.GetRandomSatisfiedChannelExcluding(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, param.TokenId, param.ExcludedChannelIds)
+			channel, err = param.selectChannel(param.TokenGroup, param.GetRetry(), param.ExcludedChannelIds)
 		}
 		if err != nil {
 			return nil, param.TokenGroup, err

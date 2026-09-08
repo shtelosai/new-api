@@ -13,6 +13,7 @@ import (
 type ChannelSettings struct {
 	TworkRuntime           string `json:"twork_runtime,omitempty"`
 	TworkWireAPI           string `json:"twork_wire_api,omitempty"`
+	TworkPiCompatibility   string `json:"twork_pi_compatibility,omitempty"`
 	ForceFormat            bool   `json:"force_format,omitempty"`
 	ThinkingToContent      bool   `json:"thinking_to_content,omitempty"`
 	Proxy                  string `json:"proxy"`

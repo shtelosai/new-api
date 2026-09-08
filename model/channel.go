@@ -274,6 +274,8 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 			if getStatus(idx) == common.ChannelStatusEnabled {
 				// update polling index for next call (point to the next position)
 				channel.ChannelInfo.MultiKeyPollingIndex = (idx + 1) % len(keys)
+				// 正式授权查询返回独立对象，仍须在本渠道锁内推进共享游标。
+				channelInfo.MultiKeyPollingIndex = channel.ChannelInfo.MultiKeyPollingIndex
 				return keys[idx], idx, nil
 			}
 		}

@@ -50,6 +50,14 @@ func Distribute() func(c *gin.Context) {
 		}
 
 		routeID, explicitRoute, routeErr := parseTworkChannelRoute(c.Request)
+		policy, policyErr := parseTworkModelRoute(c.Request)
+		if policyErr != nil || (policy.ModelRoute && ok) {
+			abortWithOpenAiMessage(c, http.StatusBadRequest, "模型级选路声明无效，不能指定固定渠道")
+			return
+		}
+		if policy.ExcludeAnthropic {
+			common.SetContextKey(c, constant.ContextKeyTworkRoutePolicy, policy)
+		}
 		if routeErr != nil || (explicitRoute && ok) {
 			message := "不能同时使用令牌渠道后缀与显式渠道请求头"
 			if routeErr != nil {
@@ -60,7 +68,7 @@ func Distribute() func(c *gin.Context) {
 		}
 		routeModelName := modelRequest.Model
 
-		if explicitRoute {
+		if explicitRoute || policy.ModelRoute {
 			storage, bodyErr := common.GetBodyStorage(c)
 			if bodyErr != nil {
 				abortWithOpenAiMessage(c, http.StatusBadRequest, "无法读取显式渠道请求体")
@@ -82,6 +90,9 @@ func Distribute() func(c *gin.Context) {
 			}
 			c.Request.Body = io.NopCloser(storage)
 			routeModelName = requestedModel
+		}
+		if policy.ModelRoute {
+			common.SetContextKey(c, constant.ContextKeyTworkRouteModel, routeModelName)
 		}
 		if !ok {
 			// Select a channel for the user
@@ -118,7 +129,7 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, status, message)
 				return
 			}
-			if !tworkChannelSupportsProtocol(c.Request, channel) || !channelSupportsRequestPath(channel, c.Request.URL.Path, routeModelName) {
+			if policy.BlocksAnthropic(channel, routeModelName) || !tworkChannelSupportsProtocol(c.Request, channel) || !channelSupportsRequestPath(channel, c.Request.URL.Path, routeModelName) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, model.ErrTworkRouteDenied.Error())
 				return
 			}
@@ -135,7 +146,7 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
 				return
 			}
-			if channel.Status != common.ChannelStatusEnabled || !channel.AllowsLegacyRuntime() {
+			if channel.Status != common.ChannelStatusEnabled || !channel.AllowsLegacyRuntime() || policy.BlocksAnthropic(channel, routeModelName) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 				return
 			}
@@ -166,13 +177,13 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 
-				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
+				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found && !policy.ModelRoute {
 					affinityUsable := false
 					rejectedByTokenFilter := false
 					rejectedByCooldown := false
 					tokenID := c.GetInt(string(constant.ContextKeyTokenId))
 					preferred, err := model.CacheGetChannel(preferredChannelID)
-					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && preferred.AllowsLegacyRuntime() &&
+					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && preferred.AllowsLegacyRuntime() && !policy.BlocksAnthropic(preferred, modelRequest.Model) &&
 						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
@@ -257,12 +268,16 @@ func Distribute() func(c *gin.Context) {
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model)
-		if explicitRoute && setupErr != nil {
+		if (explicitRoute || policy.ModelRoute) && setupErr != nil {
 			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, setupErr.Error())
 			return
 		}
 		c.Next()
-		if useSoftFailureCooldown {
+		if policy.ModelRoute {
+			if common.GetContextKeyBool(c, constant.ContextKeyTworkRelaySucceeded) {
+				service.RecordChannelAffinity(c, common.GetContextKeyInt(c, constant.ContextKeyChannelId))
+			}
+		} else if useSoftFailureCooldown {
 			if channel != nil && c.Writer != nil && common.GetContextKeyBool(c, constant.ContextKeyClaudeRelaySucceeded) {
 				service.RecordChannelAffinity(c, channel.Id)
 			}

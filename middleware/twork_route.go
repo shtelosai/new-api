@@ -55,13 +55,45 @@ func tworkRouteCapabilityVersion(request *http.Request) int {
 	version := 0
 	for _, capability := range strings.Split(strings.Join(request.Header.Values("X-Twork-Client-Capabilities"), ","), ",") {
 		switch strings.TrimSpace(capability) {
+		case "model-routes-v3":
+			return 3
 		case "model-routes-v2":
-			return 2
+			version = 2
 		case "model-routes-v1":
-			version = 1
+			if version < 1 {
+				version = 1
+			}
 		}
 	}
 	return version
+}
+
+func parseTworkModelRoute(request *http.Request) (model.TworkRoutePolicy, error) {
+	policy := model.TworkRoutePolicy{}
+	versions := request.Header.Values("X-Twork-Client-Version")
+	if len(versions) == 1 {
+		version := tworkVersionPattern.FindStringSubmatch(versions[0])
+		policy.ExcludeAnthropic = version != nil && version[4] == "" && (len(version[1]) > 1 || version[1] >= "4")
+	}
+	modes, present := request.Header[http.CanonicalHeaderKey("X-Twork-Route-Mode")]
+	if !present {
+		return policy, nil
+	}
+	invalid := errors.New("模型级请求需要 4.0.0 正式版、model-routes-v3、Pi 与匹配的协议，且不能指定渠道")
+	_, pinned := request.Header[http.CanonicalHeaderKey("X-Twork-Channel-Id")]
+	runtimes := request.Header.Values("X-Twork-Agent-Runtime")
+	wires := request.Header.Values("X-Twork-Wire-Api")
+	if len(modes) != 1 || modes[0] != "model" || pinned || !policy.ExcludeAnthropic || tworkRouteCapabilityVersion(request) < 3 ||
+		len(runtimes) != 1 || runtimes[0] != "pi" || len(wires) != 1 {
+		return policy, invalid
+	}
+	wire := wires[0]
+	if !((wire == "responses" && (request.URL.Path == "/v1/responses" || request.URL.Path == "/v1/responses/compact")) ||
+		(wire == "chat_completions" && request.URL.Path == "/v1/chat/completions")) {
+		return policy, invalid
+	}
+	policy.ModelRoute, policy.WireAPI = true, wire
+	return policy, nil
 }
 
 // 配置与请求协议必须一致；v1 客户端不能借旧请求格式进入 Pi 渠道。

@@ -83,3 +83,6 @@ const (
 
 // 显式渠道请求通过鉴权后固定选路，不允许跨渠道重试。
 const ContextKeyTworkExplicitChannelRoute ContextKey = "twork_explicit_channel_route"
+const ContextKeyTworkRoutePolicy ContextKey = "twork_route_policy"
+const ContextKeyTworkRouteModel ContextKey = "twork_route_model"
+const ContextKeyTworkRelaySucceeded ContextKey = "twork_relay_succeeded"

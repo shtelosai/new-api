@@ -306,6 +306,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
+			if !relayRequestContextDone(c) {
+				common.SetContextKey(c, constant.ContextKeyTworkRelaySucceeded, true)
+			}
 			if relayFormat == types.RelayFormatClaude && !relayRequestContextDone(c) {
 				common.SetContextKey(c, constant.ContextKeyClaudeRelaySucceeded, true)
 			}
@@ -396,7 +399,8 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
-	if info.ChannelMeta == nil || common.GetContextKeyBool(c, constant.ContextKeyTworkExplicitChannelRoute) {
+	policy, _ := common.GetContextKeyType[model.TworkRoutePolicy](c, constant.ContextKeyTworkRoutePolicy)
+	if info.ChannelMeta == nil || common.GetContextKeyBool(c, constant.ContextKeyTworkExplicitChannelRoute) || (policy.ModelRoute && retryParam.GetRetry() == 0) {
 		autoBan := c.GetBool("auto_ban")
 		autoBanInt := 1
 		if !autoBan {

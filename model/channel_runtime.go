@@ -119,14 +119,17 @@ func GetAuthorizedTworkChannel(ctx context.Context, tokenID int, modelName strin
 }
 
 // legacyChannelIDs 在 DB 选路的优先级计算之前过滤，避免专用渠道占据最高优先级。
-func legacyChannelIDs(group, modelName string) ([]int, error) {
+func legacyChannelIDs(group, modelName string, policies ...TworkRoutePolicy) ([]int, error) {
 	idsQuery := DB.Model(&Ability{}).Select("channel_id").Where(commonGroupCol+" = ? AND model = ? AND enabled = ?", group, modelName, true)
 	var channels []Channel
-	if err := DB.Select("id", "setting").Where("id IN (?)", idsQuery).Find(&channels).Error; err != nil {
+	if err := DB.Select("id", "type", "setting").Where("id IN (?)", idsQuery).Find(&channels).Error; err != nil {
 		return nil, fmt.Errorf("读取渠道运行方式失败: %w", err)
 	}
 	ids := make([]int, 0, len(channels))
 	for _, channel := range channels {
+		if len(policies) > 0 && policies[0].BlocksAnthropic(&channel, modelName) {
+			continue
+		}
 		if channel.AllowsLegacyRuntime() {
 			ids = append(ids, channel.Id)
 		}
