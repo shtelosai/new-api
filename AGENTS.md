@@ -120,6 +120,7 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - `channels.setting.twork_runtime` 缺省、空字符串或 `legacy` 保持旧选路；`codex` 仅供显式授权的 Responses 请求。标记重复、大小写/转义变体、坏 JSON、未知值和 null 必须拒绝，读取设置不得清空并保存损坏配置。
 - 普通选路（含粘性、重试、关闭内存缓存和管理员令牌渠道后缀）必须排除专用渠道。旧 codex 显式请求须带正整数 `X-Twork-Channel-Id`、`model-routes-v1` 或 v2 能力与严格 SemVer 正式版 `>=4.0.0`，仅允许 `/v1/responses` 和 `/v1/responses/compact`；Pi 使用上述 v2 协议约束。
 - 显式请求的顶层 `model` 必须是唯一且规范的字符串键，不得重序列化原始透传体；显式渠道每次直查真实 `token_model_channels` 授权、渠道模型声明与启用/模型禁用状态；空缓存、无授权及管理员身份均不能放行。固定渠道不得重试或回退；compact 按请求原始模型鉴权，保留既有计费后缀并检查两种模型禁用名。
+- 企业员工桥接仅接受管理员 token 渠道后缀与 `X-Twork-Employee-Authorization` 服务端签名；`TWORK_EMPLOYEE_CHAT_BRIDGE_KEY` 只从私有环境注入。签名绑定 60 秒时间窗、方法/路径、付款 token_id、渠道和原始正文 SHA256；验签后实时核验模型、渠道及付款分组，转发前删除签名头，不写持久化模型授权。普通显式渠道鉴权不变；所有指定渠道必须在 channel error 分支前拒绝重试。跨语言与计费验收：`python3 scripts/verify_employee_chat_bridge.py --binary <本机网关二进制> --output <临时目录>`，仅用临时 SQLite 和假上游。
 
 **Model health & disable/recovery invariants:**
 

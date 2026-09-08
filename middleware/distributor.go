@@ -49,6 +49,11 @@ func Distribute() func(c *gin.Context) {
 			return
 		}
 
+		employeeChannel, employeeRoute, employeeErr := resolveEmployeeChatRoute(c, modelRequest.Model)
+		if employeeErr != nil {
+			abortWithOpenAiMessage(c, http.StatusForbidden, model.ErrTworkRouteDenied.Error())
+			return
+		}
 		routeID, explicitRoute, routeErr := parseTworkChannelRoute(c.Request)
 		if routeErr != nil || (explicitRoute && ok) {
 			message := "不能同时使用令牌渠道后缀与显式渠道请求头"
@@ -106,7 +111,10 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
-		if explicitRoute {
+		if employeeRoute {
+			channel = employeeChannel
+			common.SetContextKey(c, constant.ContextKeyTworkExplicitChannelRoute, true)
+		} else if explicitRoute {
 			channel, err = model.GetAuthorizedTworkChannel(c.Request.Context(), c.GetInt(string(constant.ContextKeyTokenId)), routeModelName, routeID, modelRequest.Model)
 			if err != nil {
 				status := http.StatusServiceUnavailable
@@ -257,7 +265,7 @@ func Distribute() func(c *gin.Context) {
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model)
-		if explicitRoute && setupErr != nil {
+		if (explicitRoute || employeeRoute) && setupErr != nil {
 			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, setupErr.Error())
 			return
 		}

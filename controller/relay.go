@@ -435,6 +435,10 @@ func relayRequestContextDone(c *gin.Context) bool {
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+	// 管理员渠道后缀同样是精确路由，配置错误也不能换到其他渠道。
+	if _, specified := c.Get("specific_channel_id"); specified {
+		return false
+	}
 	if common.GetContextKeyBool(c, constant.ContextKeyTworkExplicitChannelRoute) {
 		return false
 	}
