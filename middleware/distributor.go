@@ -49,6 +49,11 @@ func Distribute() func(c *gin.Context) {
 			return
 		}
 
+		employeeChannel, employeeRoute, employeeErr := resolveEmployeeChatRoute(c, modelRequest.Model)
+		if employeeErr != nil {
+			abortWithOpenAiMessage(c, http.StatusForbidden, model.ErrTworkRouteDenied.Error())
+			return
+		}
 		routeID, explicitRoute, routeErr := parseTworkChannelRoute(c.Request)
 		policy, policyErr := parseTworkModelRoute(c.Request)
 		if policyErr != nil || (policy.ModelRoute && ok) {
@@ -117,7 +122,10 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
-		if explicitRoute {
+		if employeeRoute {
+			channel = employeeChannel
+			common.SetContextKey(c, constant.ContextKeyTworkExplicitChannelRoute, true)
+		} else if explicitRoute {
 			channel, err = model.GetAuthorizedTworkChannel(c.Request.Context(), c.GetInt(string(constant.ContextKeyTokenId)), routeModelName, routeID, modelRequest.Model)
 			if err != nil {
 				status := http.StatusServiceUnavailable
@@ -268,7 +276,7 @@ func Distribute() func(c *gin.Context) {
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model)
-		if (explicitRoute || policy.ModelRoute) && setupErr != nil {
+		if (explicitRoute || policy.ModelRoute || employeeRoute) && setupErr != nil {
 			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, setupErr.Error())
 			return
 		}
