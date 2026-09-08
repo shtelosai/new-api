@@ -65,7 +65,11 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		)
 	}
 
-	request, err := common.DeepCopy(responsesReq)
+	copyRequest := common.DeepCopy[dto.OpenAIResponsesRequest]
+	if info.ChannelSetting.TworkRuntime == "pi" {
+		copyRequest = copyPiResponsesRequest
+	}
+	request, err := copyRequest(responsesReq)
 	if err != nil {
 		return types.NewError(fmt.Errorf("failed to copy request to GeneralOpenAIRequest: %w", err), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
