@@ -327,7 +327,7 @@ func filterChannelsByRequestPathAndModel(channels []int, requestPath string, mod
 		if !channel.AllowsLegacyRuntime() {
 			continue
 		}
-		if len(policies) > 0 && policies[0].BlocksAnthropic(channel, model) {
+		if len(policies) > 0 && policies[0].BlocksModelChannel(channel, model) {
 			continue
 		}
 		if requestPath == "" || channel.Type != constant.ChannelTypeAdvancedCustom {

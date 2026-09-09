@@ -123,6 +123,10 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		if employeeRoute {
+			if policy.BlocksModelChannel(employeeChannel, routeModelName) {
+				abortWithOpenAiMessage(c, http.StatusForbidden, model.ErrTworkRouteDenied.Error())
+				return
+			}
 			channel = employeeChannel
 			common.SetContextKey(c, constant.ContextKeyTworkExplicitChannelRoute, true)
 		} else if explicitRoute {
@@ -137,7 +141,7 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, status, message)
 				return
 			}
-			if policy.BlocksAnthropic(channel, routeModelName) || !tworkChannelSupportsProtocol(c.Request, channel) || !channelSupportsRequestPath(channel, c.Request.URL.Path, routeModelName) {
+			if policy.BlocksModelChannel(channel, routeModelName) || !tworkChannelSupportsProtocol(c.Request, channel) || !channelSupportsRequestPath(channel, c.Request.URL.Path, routeModelName) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, model.ErrTworkRouteDenied.Error())
 				return
 			}
@@ -154,7 +158,7 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
 				return
 			}
-			if channel.Status != common.ChannelStatusEnabled || !channel.AllowsLegacyRuntime() || policy.BlocksAnthropic(channel, routeModelName) {
+			if channel.Status != common.ChannelStatusEnabled || !channel.AllowsLegacyRuntime() || policy.BlocksModelChannel(channel, routeModelName) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 				return
 			}
@@ -191,7 +195,7 @@ func Distribute() func(c *gin.Context) {
 					rejectedByCooldown := false
 					tokenID := c.GetInt(string(constant.ContextKeyTokenId))
 					preferred, err := model.CacheGetChannel(preferredChannelID)
-					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && preferred.AllowsLegacyRuntime() && !policy.BlocksAnthropic(preferred, modelRequest.Model) &&
+					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && preferred.AllowsLegacyRuntime() && !policy.BlocksModelChannel(preferred, modelRequest.Model) &&
 						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)

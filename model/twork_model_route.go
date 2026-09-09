@@ -16,14 +16,15 @@ type TworkRoutePolicy struct {
 	WireAPI          string
 }
 
-func (p TworkRoutePolicy) BlocksAnthropic(channel *Channel, modelName string) bool {
+func (p TworkRoutePolicy) BlocksModelChannel(channel *Channel, modelName string) bool {
 	name := strings.ToLower(strings.TrimSpace(modelName))
 	name = name[strings.LastIndex(name, "/")+1:]
-	return p.ExcludeAnthropic && channel.Type == constant.ChannelTypeAnthropic && !strings.HasPrefix(name, "claude-") && modelName != "auto" && modelName != "summarization-model"
+	// 4.0 的别名同样按公开模型 ID 判断，不豁免 Auto 或摘要。
+	return p.ExcludeAnthropic && (channel.Type == constant.ChannelTypeAnthropic) != strings.HasPrefix(name, "claude-")
 }
 
 func (p TworkRoutePolicy) Allows(channel *Channel, modelName string) bool {
-	if p.BlocksAnthropic(channel, modelName) {
+	if p.BlocksModelChannel(channel, modelName) {
 		return false
 	}
 	if !p.ModelRoute {

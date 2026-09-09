@@ -127,7 +127,7 @@ func legacyChannelIDs(group, modelName string, policies ...TworkRoutePolicy) ([]
 	}
 	ids := make([]int, 0, len(channels))
 	for _, channel := range channels {
-		if len(policies) > 0 && policies[0].BlocksAnthropic(&channel, modelName) {
+		if len(policies) > 0 && policies[0].BlocksModelChannel(&channel, modelName) {
 			continue
 		}
 		if channel.AllowsLegacyRuntime() {
