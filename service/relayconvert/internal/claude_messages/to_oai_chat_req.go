@@ -67,6 +67,18 @@ func ClaudeMessagesRequestToOpenAIChat(claudeRequest dto.ClaudeRequest, info *re
 			openAIRequest.Reasoning = reasoningJSON
 		}
 	} else if info != nil {
+		if relaymeta.RelayInfoChannelType(info) == constant.ChannelTypeOpenAI &&
+			strings.HasPrefix(strings.ToLower(relaymeta.RelayInfoUpstreamModelName(info)), "glm-") {
+			openAIRequest.ReasoningEffort = claudeRequest.GetEfforts()
+			if claudeRequest.Thinking != nil {
+				thinkingJSON, err := common.Marshal(claudeRequest.Thinking)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal GLM thinking config: %w", err)
+				}
+				openAIRequest.THINKING = thinkingJSON
+			}
+		}
+
 		thinkingSuffix := "-thinking"
 		if strings.HasSuffix(info.OriginModelName, thinkingSuffix) &&
 			!strings.HasSuffix(openAIRequest.Model, thinkingSuffix) {

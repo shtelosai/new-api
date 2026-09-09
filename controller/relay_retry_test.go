@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,6 +90,34 @@ func TestShouldRetryRetriesGatewayTimeoutWhenRetryAvailable(t *testing.T) {
 	err := types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, http.StatusGatewayTimeout)
 
 	require.True(t, shouldRetry(c, err, 1))
+}
+
+func TestShouldRetryKeepsExplicitChannelPinnedOnChannelErrors(t *testing.T) {
+	withRetryStatusRanges(t, []operation_setting.StatusCodeRange{{Start: 500, End: 599}})
+	channelErr := types.NewError(
+		errors.New("模型映射无效"),
+		types.ErrorCodeChannelModelMappedError,
+		types.ErrOptionWithSkipRetry(),
+	)
+	tests := []struct {
+		name   string
+		pinned bool
+		err    *types.NewAPIError
+		want   bool
+	}{
+		{name: "普通请求保留渠道错误重试", err: channelErr, want: true},
+		{name: "指定渠道拒绝渠道错误重试", pinned: true, err: channelErr, want: false},
+		{name: "指定渠道拒绝上游错误重试", pinned: true, err: types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newRetryTestContext()
+			if tt.pinned {
+				common.SetContextKey(c, constant.ContextKeyTokenSpecificChannelId, "42")
+			}
+			assert.Equal(t, tt.want, shouldRetry(c, tt.err, 1))
+		})
+	}
 }
 
 func TestShouldRetryRetriesCloudflareTimeoutWhenRetryAvailable(t *testing.T) {
