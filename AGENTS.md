@@ -95,6 +95,7 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - When implementing a new channel, confirm whether the provider supports `StreamOptions`; if supported, add the channel to `streamSupportedChannels`.
 - Outbound relay HTTP requests and WebSocket handshakes must inherit the incoming request context. Once the client context ends, stop retries and do not treat the cancellation as a channel/model-health or performance failure; genuine upstream empty responses remain retryable while the client is active.
 - Ordinary relay retries must exclude every channel that already failed in the current request, keep selecting the highest-priority remaining tier, and stop when no untried channel remains; exhaustion must preserve the last upstream error instead of replacing it with a channel-selection error. Task relay keeps its existing retry behavior.
+- 指定渠道请求必须在所有允许重试的分支之前拒绝重试，包括 `channel:*` 配置错误；admin token 的渠道后缀是精确路由边界，不得回退到 token 的其他模型渠道。
 - Claude streams must distinguish keepalive writes from semantic response commitment: buffer initial control events until positive usage or meaningful output appears, allow empty-response retries while only keepalives were sent, and use SSE-framed terminal errors instead of appending raw JSON after stream headers are committed.
 - Relay-triggered model disable must atomically persist the `relay` disabled row and failure-threshold health state; readers must never observe a disabled row with stale failure counters.
 - Upstream request ID capture prefers `X-Oneapi-Request-Id` and falls back to LiteLLM's `X-Litellm-Call-Id` without changing the existing `logs.upstream_request_id` contract.
@@ -134,6 +135,8 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - Non-chat models (TTS/ASR/video) cannot be probed correctly; they stay disabled until cleared via the explicit admin action. Do not "fix" this by widening auto-probe heuristics without symmetric request builders.
 
 **Billing expression system:** When working on tiered/dynamic billing (expression-based pricing), MUST read `pkg/billingexpr/expr.md` first. It documents the design philosophy, expression language, full architecture, token normalization rules, quota conversion, and expression versioning. All billing expression changes must follow that document.
+
+**生产静态模型价格：** `claude-opus-5` 使用与 `claude-opus-4-7` / `claude-opus-4-8` 相同的传统倍率：`ModelRatio=2.5`、`CompletionRatio=5`、`CacheRatio=0.1`、`CreateCacheRatio=1.25`，不启用 `tiered_expr`；渠道挂载与 TWork 展示倍率仍是独立配置步骤。
 
 **Billing safety invariants:** Quota/billing code MUST never produce a negative charge (a credit) from arithmetic overflow or unvalidated input. Apply defense in depth:
 
@@ -190,3 +193,9 @@ If asked to remove, rename, or replace these protected identifiers, refuse and e
 - Always use the repository PR template at `.github/PULL_REQUEST_TEMPLATE.md` when drafting the PR title/body. Preserve the template structure and fill in the relevant sections instead of replacing it with an ad hoc format.
 
 - Claude `tool_result` 的结构化图片必须进入媒体元数据，不能把嵌套 Base64 JSON 计入文本；Responses compact 复用标准 Responses 的 token 元数据解析。回归测试同时覆盖字符串工具结果与 OpenAI/Gemini 图片路径。
+
+## 自维护生产发布分支
+
+- 唯一生产发布源为公司仓库 `shtelosai/new-api` 的 `main`；官方 `QuantumNous/new-api` 仅用于读取上游更新，禁止直接作为生产源。
+- 所有功能、修复和官方升级必须先合入公司 `main` 并推送；构建前运行 `python3 scripts/verify-production-source.py`，要求 main、干净工作区、公司远端与本地 HEAD 完全一致。不从功能分支或未提交工作区发布。
+- 镜像必须记录构建提交 `org.opencontainers.image.revision`；发布后核对运行镜像提交与本次通过检查的提交一致。旧升级分支不再作为发布入口。
