@@ -79,6 +79,10 @@ func resolveEmployeeChatRoute(c *gin.Context, billingModel string) (*model.Chann
 	if err != nil || (wire == "responses" && path != "/v1/responses") || (wire != "responses" && path != "/v1/chat/completions") || !channelSupportsRequestPath(&channel, path, requestedModel) {
 		return nil, true, denied
 	}
+	// 二级菜单仅接受固定渠道请求头和正式 token_model_channels 授权。
+	if channel.GetSetting().TworkDisplayMode == "submenu" {
+		return nil, true, denied
+	}
 	group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 	groups := strings.Split(channel.Group, ",")
 	for i := range groups {

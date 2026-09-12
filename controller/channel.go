@@ -944,6 +944,16 @@ func UpdateChannel(c *gin.Context) {
 	}
 	clearChannelReadOnlyFields(&channel, requestData)
 
+	// 先合并 CMS 管理的当前路由标记，旧表单中的过期值不参与最终设置校验。
+	originChannel, err := model.GetChannelById(channel.Id, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := channel.PreserveTworkSettings(originChannel); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	// 使用统一的校验函数
 	if err := validateChannel(&channel.Channel, false); err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -953,15 +963,6 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	// Preserve existing ChannelInfo to ensure multi-key channels keep correct state even if the client does not send ChannelInfo in the request.
-	originChannel, err := model.GetChannelById(channel.Id, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo
 

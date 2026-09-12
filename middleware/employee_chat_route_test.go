@@ -39,6 +39,7 @@ func TestEmployeeChatSignedRoute(t *testing.T) {
 		{"渠道下线", "channel_disabled", 403},
 		{"模型不在渠道中", "model", 403},
 		{"请求协议不匹配", "wire", 403},
+		{"二级菜单不能使用企业签名绕过正式授权", "submenu", 403},
 		{"付款分组不匹配", "group", 403},
 		{"所有上游密钥禁用时不得进入转发", "keys_disabled", 503},
 	} {
@@ -61,6 +62,9 @@ func TestEmployeeChatSignedRoute(t *testing.T) {
 			}
 			if tc.mutate == "wire" {
 				require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", 4801).Update("setting", `{"twork_runtime":"pi","twork_wire_api":"chat_completions"}`).Error)
+			}
+			if tc.mutate == "submenu" {
+				require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", 4801).Update("setting", `{"twork_runtime":"pi","twork_wire_api":"responses","twork_display_mode":"submenu"}`).Error)
 			}
 			if tc.mutate == "group" {
 				require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", 4801).Update("group", "other").Error)

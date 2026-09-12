@@ -34,6 +34,10 @@ func (p TworkRoutePolicy) Allows(channel *Channel, modelName string) bool {
 	if err != nil || wire != p.WireAPI {
 		return false
 	}
+	// 二级菜单只允许显式固定渠道，不能进入优先级、粘性或重试候选。
+	if channel.GetSetting().TworkDisplayMode == "submenu" {
+		return false
+	}
 	profile, present, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_pi_compatibility")
 	return err == nil && (!present || profile != "") && dto.SupportsTworkPiCompatibility(profile, wire)
 }

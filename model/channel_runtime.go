@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,6 +24,16 @@ func (channel *Channel) TworkRuntime() (string, error) {
 	wire, wirePresent, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_wire_api")
 	if err != nil {
 		return "", err
+	}
+	displayMode, displayPresent, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_display_mode")
+	if err != nil {
+		return "", err
+	}
+	if displayPresent && displayMode != "default" && displayMode != "submenu" {
+		return "", errors.New("不支持的 twork_display_mode")
+	}
+	if displayMode == "submenu" && runtime != "pi" {
+		return "", errors.New("二级菜单仅支持 Pi 渠道")
 	}
 	var settings dto.ChannelSettings
 	if err := common.UnmarshalJsonStr(*channel.Setting, &settings); err != nil {
@@ -68,6 +79,45 @@ func (channel *Channel) TworkWireAPI() (string, error) {
 func (channel *Channel) AllowsLegacyRuntime() bool {
 	runtime, err := channel.TworkRuntime()
 	return err == nil && runtime == "legacy"
+}
+
+// PreserveTworkSettings 保留 CMS 管理的路由标记，普通渠道表单不能覆盖其当前值。
+func (channel *Channel) PreserveTworkSettings(existing *Channel) error {
+	if channel.Setting == nil {
+		return nil
+	}
+	incomingJSON, existingJSON := "{}", "{}"
+	if *channel.Setting != "" {
+		incomingJSON = *channel.Setting
+	}
+	if existing.Setting != nil && *existing.Setting != "" {
+		existingJSON = *existing.Setting
+	}
+	var incoming, stored map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(incomingJSON, &incoming); err != nil {
+		return err
+	}
+	if err := common.UnmarshalJsonStr(existingJSON, &stored); err != nil {
+		return err
+	}
+	for _, field := range []string{"twork_runtime", "twork_wire_api", "twork_pi_compatibility", "twork_display_mode"} {
+		if _, _, err := common.CanonicalJSONStringField([]byte(incomingJSON), field); err != nil {
+			return err
+		}
+		if _, _, err := common.CanonicalJSONStringField([]byte(existingJSON), field); err != nil {
+			return err
+		}
+		delete(incoming, field)
+		if value, present := stored[field]; present {
+			incoming[field] = value
+		}
+	}
+	encoded, err := common.Marshal(incoming)
+	if err != nil {
+		return err
+	}
+	channel.Setting = common.GetPointer(string(encoded))
+	return channel.ValidateSettings()
 }
 
 var ErrTworkRouteDenied = errors.New("没有该模型渠道的访问权限，或渠道不可用")
