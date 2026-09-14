@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """用发布二进制、临时 SQLite 和合成上游验证 Responses 切换，完全隔离生产数据。"""
 import argparse
-import contextlib
 import hashlib
 import http.server
+import http.client
 import json
 import os
 from pathlib import Path
@@ -32,7 +32,20 @@ def main():
             pass
 
         def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if self.headers.get('Transfer-Encoding', '').lower() == 'chunked':
+                chunks = []
+                while True:
+                    size = int(self.rfile.readline().split(b';', 1)[0], 16)
+                    if size == 0:
+                        while self.rfile.readline().strip():
+                            pass
+                        break
+                    chunks.append(self.rfile.read(size))
+                    assert self.rfile.read(2) == b'\r\n'
+                raw = b''.join(chunks)
+            else:
+                raw = self.rfile.read(int(self.headers['Content-Length']))
+            body = json.loads(raw)
             channel = int(self.path.split('/')[1])
             calls.append(channel)
             tag = body.get('input')
@@ -74,6 +87,7 @@ def main():
            'BATCH_UPDATE_ENABLED': 'false', 'GLOBAL_API_RATE_LIMIT_ENABLE': 'false',
            'SESSION_SECRET': 'isolated-responses-acceptance', 'GIN_MODE': 'release'}
     process = None
+    connection = http.client.HTTPConnection("127.0.0.1", int(base.rsplit(":",1)[1]), timeout=20)
     logfile = (args.output / 'gateway.log').open('w')
 
     def start():
@@ -98,11 +112,14 @@ def main():
                    'X-Twork-Client-Version': '4.0.0', 'X-Twork-Client-Capabilities': 'model-routes-v3',
                    'X-Twork-Route-Mode': 'model', 'X-Twork-Agent-Runtime': 'pi', 'X-Twork-Wire-Api': 'responses'}
         if fixed:
-            headers['X-Twork-Route-Mode'] = 'channel'
+            headers.pop('X-Twork-Route-Mode')
             headers['X-Twork-Channel-Id'] = '301'
             headers['X-Twork-Client-Capabilities'] = 'model-routes-v2'
-        return request(base + '/v1/responses', {'model': MODEL, 'input': tag, 'store': False,
-                                               'prompt_cache_key': session, 'stream': stream}, headers)
+        # 与桌面 SDK 一样复用连接，避免 urllib 的 Connection: close 在结算前取消服务端上下文。
+        connection.request('POST', '/v1/responses', json.dumps({'model': MODEL, 'input': tag, 'store': False,
+                                                               'prompt_cache_key': session, 'stream': stream}), headers)
+        response = connection.getresponse()
+        return response.status, response.read()
 
     try:
         start()
@@ -171,6 +188,7 @@ def main():
         (args.output/'result.json').write_text(json.dumps(result,indent=2))
         print(json.dumps(result))
     finally:
+        connection.close()
         stop()
         logfile.close()
         server.shutdown()
