@@ -76,9 +76,10 @@ type channelSoftCooldownLogInfo struct {
 }
 
 type ChannelSoftCooldownEntry struct {
-	ExpiresAt  time.Time `json:"expires_at"`
-	StatusCode int       `json:"status_code"`
-	ErrorClass string    `json:"error_class"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	StatusCode       int       `json:"status_code"`
+	ErrorClass       string    `json:"error_class"`
+	ProbeAfterExpiry bool      `json:"probe_after_expiry,omitempty"`
 }
 
 func init() {
@@ -219,7 +220,7 @@ func AppendChannelSoftCooldownAdminInfo(c *gin.Context, adminInfo map[string]int
 	if !info.Applied && len(info.SkippedChannelIDs) == 0 && !info.CacheDegraded && !info.AffinityCleared {
 		return
 	}
-	streamCommitted := common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted)
+	streamCommitted := common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted) || TworkResponsesFailoverEnabled(c) && c.Writer.Written()
 	cacheBackend := info.CacheBackend
 	if cacheBackend == "" {
 		cacheBackend = channelSoftCooldownCacheBackend()
@@ -290,14 +291,27 @@ func RecordChannelSoftCooldown(c *gin.Context, channelID int, modelName string, 
 	now := time.Now()
 	errorClass = classifyChannelSoftCooldownError(statusCode, errorClass)
 	entry := ChannelSoftCooldownEntry{
-		ExpiresAt:  now.Add(ttl),
-		StatusCode: statusCode,
-		ErrorClass: errorClass,
+		ProbeAfterExpiry: TworkResponsesFailoverEnabled(c),
+		ExpiresAt:        now.Add(ttl),
+		StatusCode:       statusCode,
+		ErrorClass:       errorClass,
 	}
 	key := fmt.Sprintf("%d:%s", channelID, modelName)
 	ctx, cancel := channelSoftCooldownCacheContext(c)
 	defer cancel()
-	err := getChannelSoftCooldownCache().SetWithTTLContext(ctx, key, entry, ttl)
+	cacheTTL := ttl
+	if entry.ProbeAfterExpiry {
+		cacheTTL += 24 * time.Hour
+	}
+	// 本地恢复确认与新故障写入串行，防止旧试探清掉新故障。
+	localCache := !common.RedisEnabled || common.RDB == nil
+	if localCache {
+		responsesRecoveryMutex.Lock()
+	}
+	err := getChannelSoftCooldownCache().SetWithTTLContext(ctx, key, entry, cacheTTL)
+	if localCache {
+		responsesRecoveryMutex.Unlock()
+	}
 	if err != nil && channelSoftCooldownRequestCanceled(c, err) {
 		return
 	}
@@ -331,7 +345,14 @@ func GetChannelSoftCooldown(c *gin.Context, channelID int, modelName string) (en
 		common.SysError(fmt.Sprintf("channel soft cooldown cache get failed: err=%v", err))
 		return ChannelSoftCooldownEntry{}, false
 	}
-	if !found || !entry.ExpiresAt.After(time.Now()) {
+	if !found {
+		return ChannelSoftCooldownEntry{}, false
+	}
+	if !entry.ExpiresAt.After(time.Now()) {
+		if entry.ProbeAfterExpiry && TworkResponsesFailoverEnabled(c) && !allowResponsesRecoveryProbe(c, key, entry) {
+			entry.ExpiresAt = time.Now().Add(responsesRecoveryProbeInterval)
+			return entry, true
+		}
 		return ChannelSoftCooldownEntry{}, false
 	}
 	return entry, true

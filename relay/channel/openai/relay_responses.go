@@ -30,6 +30,11 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	if service.TworkResponsesFailoverEnabled(c) {
+		if responseErr := responsesFailure(&responsesResponse); responseErr != nil {
+			return nil, responseErr
+		}
+	}
 	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
@@ -79,6 +84,17 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	var usage = &dto.Usage{}
 	var responseTextBuilder strings.Builder
+	guarded := service.TworkResponsesFailoverEnabled(c)
+	var terminal bool
+	var streamError *types.NewAPIError
+	var pending []string
+	pendingBytes := 0
+	if guarded {
+		// 首个有效输出之前保持 HTTP 可重试，不让心跳提前提交响应。
+		previousDisablePing := info.DisablePing
+		info.DisablePing = true
+		defer func() { info.DisablePing = previousDisablePing }()
+	}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
@@ -86,12 +102,72 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		var streamResponse dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
-			sr.Error(err)
+			if guarded {
+				streamError = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+				sr.Stop(err)
+			} else {
+				sr.Error(err)
+			}
 			return
+		}
+		if guarded {
+			switch streamResponse.Type {
+			case "error":
+				var event struct {
+					Code    any                `json:"code"`
+					Message string             `json:"message"`
+					Error   *types.OpenAIError `json:"error"`
+				}
+				_ = common.UnmarshalJsonStr(data, &event)
+				upstream := types.OpenAIError{Type: "server_error", Code: event.Code, Message: event.Message}
+				if event.Error != nil {
+					upstream = *event.Error
+				}
+				if upstream.Message == "" {
+					upstream.Message = "上游 Responses 流返回错误"
+				}
+				streamError = responsesUpstreamError(upstream)
+			case "response.failed":
+				streamError = responsesFailure(streamResponse.Response)
+				if streamError == nil {
+					streamError = types.NewOpenAIError(fmt.Errorf("上游 Responses 流失败"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+				}
+			case "response.completed", "response.incomplete":
+				streamError = responsesFailure(streamResponse.Response)
+				terminal = streamError == nil
+			}
+			if streamError != nil {
+				// 失败终态可能带有权威用量，优先于下方的文本估算。
+				if streamResponse.Response != nil && streamResponse.Response.Usage != nil {
+					reported := streamResponse.Response.Usage
+					usage.PromptTokens = reported.InputTokens
+					usage.CompletionTokens = reported.OutputTokens
+					if reported.InputTokensDetails != nil {
+						usage.PromptTokensDetails.CachedTokens = reported.InputTokensDetails.CachedTokens
+						usage.PromptTokensDetails.CacheWriteTokens = reported.InputTokensDetails.CacheWriteTokens
+					}
+				}
+				sr.Stop(streamError)
+				return
+			}
+			if (streamResponse.Type == "response.created" || streamResponse.Type == "response.in_progress") && !c.Writer.Written() && pendingBytes+len(data) <= 64*1024 {
+				pending = append(pending, data)
+				pendingBytes += len(data)
+				return
+			}
+			for _, buffered := range pending {
+				var event dto.ResponsesStreamResponse
+				_ = common.UnmarshalJsonStr(buffered, &event)
+				sendResponsesStreamData(c, event, buffered)
+			}
+			pending = nil
 		}
 		sendResponsesStreamData(c, streamResponse, data)
 		switch streamResponse.Type {
-		case "response.completed":
+		case "response.completed", "response.incomplete":
+			if streamResponse.Type == "response.incomplete" && !guarded {
+				break
+			}
 			if streamResponse.Response != nil {
 				if streamResponse.Response.Usage != nil {
 					if streamResponse.Response.Usage.InputTokens != 0 {
@@ -130,6 +206,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				}
 			}
 		}
+		if guarded && terminal {
+			sr.Done()
+		}
 	})
 
 	if usage.CompletionTokens == 0 {
@@ -148,5 +227,46 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
+	if guarded {
+		if streamError == nil && !terminal {
+			streamError = types.NewOpenAIError(fmt.Errorf("上游 Responses 流在完成事件前中断"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		return usage, streamError
+	}
 	return usage, nil
+}
+
+// responsesFailure 不把 HTTP 200 等同于模型成功；正常的输出长度截断仍保留协议语义。
+func responsesFailure(response *dto.OpenAIResponsesResponse) *types.NewAPIError {
+	if response != nil {
+		if upstream := response.GetOpenAIError(); upstream != nil && (upstream.Message != "" || upstream.Type != "" || upstream.Code != nil) {
+			if upstream.Type == "" {
+				upstream.Type = "server_error"
+			}
+			return responsesUpstreamError(*upstream)
+		}
+		var status string
+		_ = common.Unmarshal(response.Status, &status)
+		if status == "completed" || status == "incomplete" && response.IncompleteDetails != nil && (response.IncompleteDetails.Reason == "max_output_tokens" || response.IncompleteDetails.Reason == "content_filter") {
+			return nil
+		}
+	}
+	return types.NewOpenAIError(fmt.Errorf("上游 Responses 未返回有效完成状态"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+}
+
+// 200 响应内的错误仍按错误类型归类，避免将无效输入或配额不足重试为服务故障。
+func responsesUpstreamError(upstream types.OpenAIError) *types.NewAPIError {
+	status := http.StatusBadGateway
+	code := fmt.Sprint(upstream.Code)
+	switch {
+	case upstream.Type == "invalid_request_error" || code == "invalid_request_error" || code == "context_length_exceeded":
+		status = http.StatusBadRequest
+	case upstream.Type == "authentication_error" || code == "invalid_api_key":
+		status = http.StatusUnauthorized
+	case upstream.Type == "permission_error" || code == "access_denied":
+		status = http.StatusForbidden
+	case upstream.Type == "rate_limit_error" || code == "rate_limit_exceeded" || code == "insufficient_quota":
+		status = http.StatusTooManyRequests
+	}
+	return types.WithOpenAIError(upstream, status)
 }

@@ -70,6 +70,13 @@ func claudeStreamGateActive(c *gin.Context) bool {
 }
 
 func writeRelayError(c *gin.Context, relayFormat types.RelayFormat, newAPIError *types.NewAPIError) {
+	if c.Writer.Written() && service.TworkResponsesFailoverEnabled(c) {
+		oai := newAPIError.ToOpenAIError()
+		if err := helper.ObjectData(c, gin.H{"type": "error", "code": oai.Code, "message": oai.Message}); err != nil {
+			logger.LogError(c, "发送 Responses 流错误失败: "+err.Error())
+		}
+		return
+	}
 	if c.Writer.Written() && claudeStreamGateActive(c) {
 		if relayFormat == types.RelayFormatClaude {
 			err := helper.ClaudeData(c, dto.ClaudeResponse{
@@ -103,6 +110,9 @@ func softFailureCooldownEnabledForRelay(c *gin.Context, relayFormat types.RelayF
 	if !operation_setting.IsSoftFailureCooldownEnabled() {
 		return false
 	}
+	if service.TworkResponsesFailoverEnabled(c) {
+		return true
+	}
 	if relayFormat != types.RelayFormatClaude || c == nil {
 		return false
 	}
@@ -124,7 +134,7 @@ func recordChannelSoftCooldownForRelay(c *gin.Context, relayFormat types.RelayFo
 	if !softFailureCooldownEnabledForRelay(c, relayFormat) {
 		return
 	}
-	if relayInfo == nil || relayInfo.IsChannelTest || relayRequestContextDone(c) || !service.IsSoftModelHealthError(newAPIError) {
+	if relayInfo == nil || relayInfo.IsChannelTest || relayRequestContextDone(c) || !service.IsRelaySoftFailure(c, newAPIError) {
 		return
 	}
 
@@ -133,13 +143,16 @@ func recordChannelSoftCooldownForRelay(c *gin.Context, relayFormat types.RelayFo
 		errorClass = string(newAPIError.GetErrorType())
 	}
 	service.RecordChannelSoftCooldown(c, channelID, modelName, newAPIError.StatusCode, errorClass)
+	if service.TworkResponsesFailoverEnabled(c) && service.DeleteCurrentChannelAffinityBinding(c) {
+		service.RecordAffinityClearedForLog(c)
+	}
 }
 
 func recordChannelSoftFailoverTerminalOutcome(c *gin.Context, succeeded bool) {
 	outcome := service.SoftFailoverOutcomeExhausted
 	if succeeded {
 		outcome = service.SoftFailoverOutcomeSameRequestSuccess
-	} else if common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted) {
+	} else if common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted) || service.TworkResponsesFailoverEnabled(c) && c.Writer.Written() {
 		outcome = service.SoftFailoverOutcomeDeferredAfterCommit
 	}
 	service.RecordChannelSoftFailoverOutcome(c, outcome)
@@ -308,6 +321,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			relayInfo.LastError = nil
 			if !relayRequestContextDone(c) {
 				common.SetContextKey(c, constant.ContextKeyTworkRelaySucceeded, true)
+				if service.TworkResponsesFailoverEnabled(c) {
+					service.CompleteResponsesRecovery(c, channel.Id, relayInfo.OriginModelName)
+				}
 			}
 			if relayFormat == types.RelayFormatClaude && !relayRequestContextDone(c) {
 				common.SetContextKey(c, constant.ContextKeyClaudeRelaySucceeded, true)
@@ -327,7 +343,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		recordChannelSoftCooldownForRelay(c, relayFormat, relayInfo, channel.Id, relayInfo.OriginModelName, newAPIError)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		softModelHealthFailure := useSoftFailureCooldown && service.IsSoftModelHealthError(newAPIError)
+		softModelHealthFailure := useSoftFailureCooldown && service.IsRelaySoftFailure(c, newAPIError)
 		if softModelHealthFailure {
 			effectiveAttemptLimit = attemptLimit
 		}
@@ -456,7 +472,7 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if openaiErr == nil {
 		return false
 	}
-	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) && !(service.TworkResponsesFailoverEnabled(c) && service.IsRelaySoftFailure(c, openaiErr)) {
 		return false
 	}
 	if types.IsChannelError(openaiErr) {
@@ -478,6 +494,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if code < 100 || code > 599 {
 		return true
 	}
+	if service.TworkResponsesFailoverEnabled(c) && service.IsRelaySoftFailure(c, openaiErr) {
+		return true
+	}
 	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
 		return false
 	}
@@ -491,7 +510,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
-	if service.ShouldDisableChannel(err) && channelError.AutoBan {
+	if service.ShouldDisableChannel(err) && channelError.AutoBan && !(service.TworkResponsesFailoverEnabled(c) && service.IsRelaySoftFailure(c, err)) {
 		modelName := c.GetString("original_model")
 		if modelName != "" {
 			reason := err.ErrorWithStatusCode()

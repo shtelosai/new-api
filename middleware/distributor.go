@@ -170,7 +170,7 @@ func Distribute() func(c *gin.Context) {
 				}
 				var selectGroup string
 				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
-				useSoftFailureCooldown = operation_setting.IsSoftFailureCooldownEnabled() && c.Request.URL.Path == "/v1/messages"
+				useSoftFailureCooldown = operation_setting.IsSoftFailureCooldownEnabled() && c.Request.URL.Path == "/v1/messages" || service.TworkResponsesFailoverEnabled(c)
 				// check path is /pg/chat/completions
 				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
 					playgroundRequest := &dto.PlayGroundRequest{}

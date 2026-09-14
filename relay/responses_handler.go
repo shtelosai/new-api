@@ -158,8 +158,19 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		}
 	}
 
+	if service.TworkResponsesFailoverEnabled(c) {
+		// 前一次失败不应污染成功备用渠道的计费及性能记录。
+		info.LastError = nil
+	}
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		// 已输出的失败流不再重试，保留原有的实际用量结算；BillingSession 防止随后重复退款。
+		if service.TworkResponsesFailoverEnabled(c) && c.Writer.Written() {
+			if partial, ok := usage.(*dto.Usage); ok && partial != nil && partial.TotalTokens > 0 {
+				info.LastError = newAPIError
+				service.PostTextConsumeQuota(c, info, partial, []string{"Responses 流中断，按已输出用量结算"})
+			}
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
