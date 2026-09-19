@@ -39,6 +39,11 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 	}
 
+	if common.GetContextKeyBool(c, constant.ContextKeyTworkImageRoute) {
+		if err := service.ValidateTworkImageResult(responseBody, true); err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCode("image_result_invalid"), http.StatusBadGateway)
+		}
+	}
 	// 计算使用量（优先上游 UsageMetadata，缺失时本地估算并保留 Gemini 计费语义）
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 

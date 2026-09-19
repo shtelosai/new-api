@@ -48,6 +48,24 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		imageChannel, imageRoute, imageErr := resolveTworkImageRoute(c, modelRequest.Model)
+		if imageErr != nil {
+			statusCode := http.StatusServiceUnavailable
+			if errors.Is(imageErr, model.ErrTworkRouteDenied) {
+				statusCode = http.StatusForbidden
+			}
+			abortWithOpenAiMessage(c, statusCode, imageErr.Error())
+			return
+		}
+
+		if imageRoute {
+			cancel, err := tworkImageDeadline(c)
+			if err != nil {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, err.Error())
+				return
+			}
+			defer cancel()
+		}
 
 		employeeChannel, employeeRoute, employeeErr := resolveEmployeeChatRoute(c, modelRequest.Model)
 		if employeeErr != nil {
@@ -122,7 +140,9 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
-		if employeeRoute {
+		if imageRoute {
+			channel = imageChannel
+		} else if employeeRoute {
 			if policy.BlocksModelChannel(employeeChannel, routeModelName) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, model.ErrTworkRouteDenied.Error())
 				return
@@ -280,7 +300,7 @@ func Distribute() func(c *gin.Context) {
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model)
-		if (explicitRoute || policy.ModelRoute || employeeRoute) && setupErr != nil {
+		if (imageRoute || explicitRoute || policy.ModelRoute || employeeRoute) && setupErr != nil {
 			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, setupErr.Error())
 			return
 		}

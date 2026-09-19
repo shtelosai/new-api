@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -49,6 +50,11 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	if common.GetContextKeyBool(c, constant.ContextKeyTworkImageRoute) {
+		if err := service.ValidateTworkImageResult(responseBody, false); err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCode("image_result_invalid"), http.StatusBadGateway)
+		}
+	}
 	updateOpenAIImageCount(info, gjson.GetBytes(responseBody, "data.#").Int())
 
 	// 写入新的 response body
