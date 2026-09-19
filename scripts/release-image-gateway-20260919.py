@@ -78,13 +78,13 @@ if action=='snapshot':
     shutil.copy2(CONFIG,BACKUP/'nginx-gateway.conf')
     shutil.copy2(COMPOSE,BACKUP/'gateway-compose.yml')
     shutil.copy2(COMPOSE.parent/'.env.shtlcloud',BACKUP/'gateway.env')
-    run('docker','tag',items[0]['Image'],'new-api:responses-failover-rollback-20260914')
+    run('docker','tag',items[0]['Image'],'new-api:image-gateway-rollback-20260919')
     save('snapshot',{'old_image':items[0]['Image'],'old_container':items[0]['Id']})
 elif action=='build':
     assert digest((ROOT/'new-api-linux-amd64').read_bytes())==SHA
     assert inspect('new-api-twork')['Id']==OLD[0]['Id']
-    assert inspect('new-api:responses-failover-rollback-20260914')['Id']==OLD[0]['Image']
-    dockerfile='FROM new-api:responses-failover-rollback-20260914\nCOPY --chmod=755 new-api-linux-amd64 /new-api\nLABEL org.opencontainers.image.revision="'+REVISION+'"\n'
+    assert inspect('new-api:image-gateway-rollback-20260919')['Id']==OLD[0]['Image']
+    dockerfile='FROM new-api:image-gateway-rollback-20260919\nCOPY --chmod=755 new-api-linux-amd64 /new-api\nLABEL org.opencontainers.image.revision="'+REVISION+'"\n'
     (ROOT/'Dockerfile').write_text(dockerfile)
     subprocess.run(['docker','build','--network=none','--pull=false','-t',IMAGE,str(ROOT)],check=True)
     built=inspect(IMAGE);base=inspect(OLD[0]['Image'])
