@@ -54,6 +54,11 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		if err := service.ValidateTworkImageResult(responseBody, false); err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCode("image_result_invalid"), http.StatusBadGateway)
 		}
+		size, err := service.ValidateTworkImageDimensions(responseBody, false, info.Request)
+		if err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCode("image_size_mismatch"), http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+		}
+		c.Header("X-Twork-Image-Size", size)
 	}
 	updateOpenAIImageCount(info, gjson.GetBytes(responseBody, "data.#").Int())
 

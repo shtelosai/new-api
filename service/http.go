@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,11 @@ func CloseResponseBodyGracefully(httpResponse *http.Response) {
 // ID). When the upstream header is X-Oneapi-Request-Id, the value is captured
 // into the Gin context for later logging.
 func ShouldCopyUpstreamHeader(c *gin.Context, k string, v []string) bool {
+	// 内部图片验收结果只能由本机网关写入，供应商响应头不能覆盖。
+	if c != nil && common.GetContextKeyBool(c, constant.ContextKeyTworkImageRoute) &&
+		(strings.EqualFold(k, "X-Twork-Image-Size") || strings.EqualFold(k, "X-Twork-Image-Channel-Id")) {
+		return false
+	}
 	if strings.EqualFold(k, "Content-Length") {
 		return false
 	}

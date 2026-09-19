@@ -19,7 +19,7 @@ import (
 
 // 图片渠道收到明确的服务端故障后冷却；参数、额度、权限和内容拒绝不惩罚渠道。
 func IsTworkImageChannelFailure(err *types.NewAPIError) bool {
-	if err == nil || types.IsSkipRetryError(err) || err.GetErrorCode() == "image_result_invalid" {
+	if err == nil || types.IsSkipRetryError(err) || (err.GetErrorCode() == "image_result_invalid" || err.GetErrorCode() == "image_size_mismatch") {
 		return false
 	}
 	oai := err.ToOpenAIError()

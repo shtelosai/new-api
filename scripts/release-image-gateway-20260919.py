@@ -3,14 +3,17 @@ import hashlib,json,os,re,shutil,subprocess,sys,time,urllib.request
 from pathlib import Path
 
 os.umask(0o077)
-ROOT=Path('/www/twork/releases/image-gateway-20260919')
+RELEASE=os.environ.get('TWORK_IMAGE_RELEASE', 'image-gateway-20260919')
+assert re.fullmatch(r'image-[a-z0-9-]+', RELEASE), '非法发布编号'
+ROOT=Path('/www/twork/releases')/RELEASE
 BACKUP=ROOT/'backup'
 CONFIG=Path('/usr/local/nginx/conf/nginx-newapi-twork.conf')
 COMPOSE=Path('/www/twork/new-api/docker-compose.shtlcloud.yml')
 NGINX='/usr/local/nginx/sbin/nginx'
 MAIN='/usr/local/nginx/conf/nginx.conf'
-CANDIDATE='new-api-twork-image-gateway-20260919'
-IMAGE='new-api:twork-image-gateway-20260919'
+CANDIDATE='new-api-twork-'+RELEASE
+IMAGE='new-api:twork-'+RELEASE
+ROLLBACK='new-api:'+RELEASE.replace('-2026', '-rollback-2026', 1)
 MANIFEST=json.loads((ROOT/'manifest.json').read_text())
 SHA=MANIFEST['binary_sha256']
 REVISION=MANIFEST['revision']
@@ -31,7 +34,7 @@ def digest(data):return hashlib.sha256(data).hexdigest()
 def health(port):
     with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/status',timeout=8) as response:
         result=json.load(response)
-    assert result.get('success') and result['data']['version']=='twork-image-gateway-20260919'
+    assert result.get('success') and result['data']['version']=='twork-'+RELEASE
 def install(path,data):
     tmp=path.with_name(path.name+'.pi-release-tmp')
     assert not tmp.exists()
@@ -78,13 +81,13 @@ if action=='snapshot':
     shutil.copy2(CONFIG,BACKUP/'nginx-gateway.conf')
     shutil.copy2(COMPOSE,BACKUP/'gateway-compose.yml')
     shutil.copy2(COMPOSE.parent/'.env.shtlcloud',BACKUP/'gateway.env')
-    run('docker','tag',items[0]['Image'],'new-api:image-gateway-rollback-20260919')
+    run('docker','tag',items[0]['Image'],ROLLBACK)
     save('snapshot',{'old_image':items[0]['Image'],'old_container':items[0]['Id']})
 elif action=='build':
     assert digest((ROOT/'new-api-linux-amd64').read_bytes())==SHA
     assert inspect('new-api-twork')['Id']==OLD[0]['Id']
-    assert inspect('new-api:image-gateway-rollback-20260919')['Id']==OLD[0]['Image']
-    dockerfile='FROM new-api:image-gateway-rollback-20260919\nCOPY --chmod=755 new-api-linux-amd64 /new-api\nLABEL org.opencontainers.image.revision="'+REVISION+'"\n'
+    assert inspect(ROLLBACK)['Id']==OLD[0]['Image']
+    dockerfile='FROM '+ROLLBACK+'\nCOPY --chmod=755 new-api-linux-amd64 /new-api\nLABEL org.opencontainers.image.revision="'+REVISION+'"\n'
     (ROOT/'Dockerfile').write_text(dockerfile)
     subprocess.run(['docker','build','--network=none','--pull=false','-t',IMAGE,str(ROOT)],check=True)
     built=inspect(IMAGE);base=inspect(OLD[0]['Image'])
