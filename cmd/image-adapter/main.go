@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -59,7 +60,8 @@ func configuredServer(config Config) (*Server, error) {
 		return nil, fmt.Errorf("监听地址必须是明确的本机或内网 IP")
 	}
 	parsed := net.ParseIP(ip)
-	if !parsed.IsLoopback() && !parsed.IsPrivate() {
+	address, _ := netip.ParseAddr(ip)
+	if !parsed.IsLoopback() && !parsed.IsPrivate() && !netip.MustParsePrefix("100.64.0.0/10").Contains(address) {
 		return nil, fmt.Errorf("禁止公网监听")
 	}
 	if config.TimeoutSeconds < 1 || config.TimeoutSeconds > 270 || config.PollIntervalMS < 100 || config.PollIntervalMS > 30000 || config.MaxInFlight < 1 || config.MaxInFlight > 32 || len(config.Providers) == 0 {

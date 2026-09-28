@@ -36,9 +36,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 
 制品安装到 `/opt/twork-image-adapter/releases/<revision>/`，`current` 指向该版本。复制本目录配置到 `/etc/twork-image-adapter/config.json`（不含凭据、0644）；由 root 建立 `/etc/twork-image-adapter/service.env`（0600），设置配置引用的两个环境变量。内部令牌使用独立随机值，New API 渠道 key 填该内部令牌，上游 key 只留在服务环境。
 
-安装本目录 systemd unit，`daemon-reload` 后仅启动 `image-adapter.service`；不重启其他服务。只监听确认属于 Docker 网桥的内网 IP，不开公网端口。健康检查 `GET /healthz` 返回 revision、在途数和计数。更新本服务时 SIGTERM 关闭接入并等待最多 280 秒排空，systemd 停止预算 300 秒。
+安装本目录 systemd unit，`daemon-reload` 后仅启动 `image-adapter.service`；不重启其他服务。只监听 loopback、RFC1918 或 Tailscale CGNAT 地址，不开公网端口。生产示例部署在现有新加坡 sg-ecs 节点，监听 Tailscale `100.88.103.99:8320`；上海节点直连供应商存在异常解析和 TLS 重置，不应固定供应商 IP 或修改宿主机全局 DNS。健康检查 `GET /healthz` 返回 revision、在途数和计数。更新本服务时 SIGTERM 关闭接入并等待最多 280 秒排空，systemd 停止预算 300 秒。
 
-New API 新增类型 1 渠道：Base URL `http://172.20.0.1:8320/apimart`，模型 `gpt-image-2.5-flare`，ratio=1，无参数/请求头覆盖；不要配置 `image_provider`。先限制测试范围并显式指定渠道验收，再开放当前图片用户范围、priority=110，并在现有图片池中加入 ID。新 ID 的池配置需要 Twork 后端重新载入配置；不等同于 New API 发布。
+New API 新增类型 1 渠道：Base URL `http://100.88.103.99:8320/apimart`，模型 `gpt-image-2.5-flare`，ratio=1，无参数/请求头覆盖；不要配置 `image_provider`。先限制测试范围并显式指定渠道验收，再开放当前图片用户范围、priority=110，并在现有图片池中加入 ID。新 ID 的池配置需要 Twork 后端重新载入配置；不等同于 New API 发布。
 
 验收：真实生图及编辑 1K/2K/4K；实际像素；两个旧图片入口；request ID 对应新增渠道；每张唯一账单；未授权拒绝；明确失败与结果未知无重复任务；原网关镜像和启动时间未变。
 

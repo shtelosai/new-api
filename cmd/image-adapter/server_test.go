@@ -197,6 +197,9 @@ func TestConfiguredRoutesKeepIndependentCredentialsAndModels(t *testing.T) {
 	assert.Equal(t, "upstream-b", server.Routes["second"].Provider.(*APIMart).Key)
 	assert.NotEqual(t, server.Routes["first"].Token, server.Routes["second"].Token)
 	assert.False(t, server.Routes["first"].Models["model-b"])
+	config.Listen = "100.88.103.99:8320"
+	_, err = configuredServer(config)
+	require.NoError(t, err, "允许 Tailscale 私网监听")
 	config.Listen = "0.0.0.0:8320"
 	_, err = configuredServer(config)
 	require.Error(t, err)
