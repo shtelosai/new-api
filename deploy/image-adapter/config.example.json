@@ -1,0 +1,15 @@
+{
+  "listen": "172.20.0.1:8320",
+  "timeout_seconds": 270,
+  "poll_interval_ms": 2000,
+  "max_in_flight": 4,
+  "providers": {
+    "apimart": {
+      "adapter": "apimart",
+      "base_url": "https://api.apimart.ai/v1",
+      "api_key_env": "APIMART_API_KEY",
+      "auth_token_env": "IMAGE_ADAPTER_APIMART_TOKEN",
+      "models": ["gpt-image-2.5-flare"]
+    }
+  }
+}

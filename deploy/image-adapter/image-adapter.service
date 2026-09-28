@@ -1,0 +1,26 @@
+[Unit]
+Description=独立异步图片适配服务
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=/etc/twork-image-adapter/service.env
+ExecStart=/opt/twork-image-adapter/current/image-adapter /etc/twork-image-adapter/config.json
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=300
+KillSignal=SIGTERM
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=1G
+CPUQuota=200%
+LimitNOFILE=4096
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
