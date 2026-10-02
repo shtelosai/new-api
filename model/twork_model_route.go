@@ -11,9 +11,10 @@ import (
 
 // TworkRoutePolicy 是单次请求约束，不改变渠道配置或旧客户端的授权语义。
 type TworkRoutePolicy struct {
-	ModelRoute       bool
-	ExcludeAnthropic bool
-	WireAPI          string
+	ModelRoute             bool
+	ExcludeAnthropic       bool
+	WireAPI                string
+	PiCompatibilityVersion string
 }
 
 func (p TworkRoutePolicy) BlocksModelChannel(channel *Channel, modelName string) bool {
@@ -39,7 +40,7 @@ func (p TworkRoutePolicy) Allows(channel *Channel, modelName string) bool {
 		return false
 	}
 	profile, present, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_pi_compatibility")
-	return err == nil && (!present || profile != "") && dto.SupportsTworkPiCompatibility(profile, wire)
+	return err == nil && (!present || profile != "") && dto.SupportsTworkPiCompatibility(profile, wire, p.PiCompatibilityVersion)
 }
 
 // 模型级选路每次直查正式授权和启用状态；缓存开关不会放宽候选范围。

@@ -2,6 +2,7 @@ package dto
 
 import (
 	_ "embed"
+	"fmt"
 	"slices"
 
 	"github.com/QuantumNous/new-api/common"
@@ -9,6 +10,9 @@ import (
 
 //go:embed twork_pi_models.json
 var tworkPiModelsJSON []byte
+
+//go:embed twork_pi_models_1_0_0.json
+var tworkPiModels100JSON []byte
 
 type TworkPiChatCompatibility struct {
 	ZaiToolStream                               bool           `json:"zaiToolStream"`
@@ -33,30 +37,42 @@ type TworkPiModelCompatibility struct {
 	ThinkingLevels   map[string]string        `json:"thinkingLevels"`
 }
 
-var tworkPiModels = func() map[string]struct {
+type tworkPiCompatibilityProfile struct {
 	Defaults TworkPiChatCompatibility             `json:"defaults"`
 	Wires    []string                             `json:"wires"`
 	Models   map[string]TworkPiModelCompatibility `json:"models"`
-} {
-	var catalog struct {
-		Profiles map[string]struct {
-			Defaults TworkPiChatCompatibility             `json:"defaults"`
-			Wires    []string                             `json:"wires"`
-			Models   map[string]TworkPiModelCompatibility `json:"models"`
-		} `json:"profiles"`
-	}
-	if err := common.Unmarshal(tworkPiModelsJSON, &catalog); err != nil {
-		panic(err)
-	}
-	return catalog.Profiles
-}()
-
-func SupportsTworkPiCompatibility(profile, wire string) bool {
-	return profile == "" || slices.Contains(tworkPiModels[profile].Wires, wire)
 }
 
-func GetTworkPiModelCompatibility(profile, model string) TworkPiModelCompatibility {
-	entry := tworkPiModels[profile]
+var tworkPiModels = loadTworkPiModels(tworkPiModelsJSON, "0.85.1")
+var tworkPiModels100 = loadTworkPiModels(tworkPiModels100JSON, "1.0.0")
+
+func loadTworkPiModels(data []byte, version string) map[string]tworkPiCompatibilityProfile {
+	var catalog struct {
+		PiVersion string                                 `json:"pi_version"`
+		Profiles  map[string]tworkPiCompatibilityProfile `json:"profiles"`
+	}
+	if err := common.Unmarshal(data, &catalog); err != nil {
+		panic(err)
+	}
+	if catalog.PiVersion != version {
+		panic(fmt.Sprintf("Pi 兼容快照版本不匹配：期望 %s，实际 %s", version, catalog.PiVersion))
+	}
+	return catalog.Profiles
+}
+
+func tworkPiProfilesForVersion(version string) map[string]tworkPiCompatibilityProfile {
+	if version == "1.0.0" {
+		return tworkPiModels100
+	}
+	return tworkPiModels
+}
+
+func SupportsTworkPiCompatibility(profile, wire, version string) bool {
+	return profile == "" || slices.Contains(tworkPiProfilesForVersion(version)[profile].Wires, wire)
+}
+
+func GetTworkPiModelCompatibility(profile, model, version string) TworkPiModelCompatibility {
+	entry := tworkPiProfilesForVersion(version)[profile]
 	if native, found := entry.Models[model]; found {
 		return native
 	}

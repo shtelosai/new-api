@@ -116,6 +116,7 @@ func Distribute() func(c *gin.Context) {
 		}
 		if policy.ModelRoute {
 			common.SetContextKey(c, constant.ContextKeyTworkRouteModel, routeModelName)
+			common.SetContextKey(c, constant.ContextKeyTworkPiCompatibilityVersion, policy.PiCompatibilityVersion)
 		}
 		if !ok {
 			// Select a channel for the user

@@ -85,6 +85,7 @@ const (
 const ContextKeyTworkExplicitChannelRoute ContextKey = "twork_explicit_channel_route"
 const ContextKeyTworkRoutePolicy ContextKey = "twork_route_policy"
 const ContextKeyTworkRouteModel ContextKey = "twork_route_model"
+const ContextKeyTworkPiCompatibilityVersion ContextKey = "twork_pi_compatibility_version"
 const ContextKeyTworkRelaySucceeded ContextKey = "twork_relay_succeeded"
 
 // 专用图片路由只由鉴权中间件设置。

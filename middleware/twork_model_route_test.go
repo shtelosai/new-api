@@ -46,3 +46,39 @@ func TestModelRouteRequiresUnambiguousVersionedProtocol(t *testing.T) {
 		})
 	}
 }
+
+func TestModelRouteSelectsOnlyExactSinglePiCompatibilityVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		values   []string
+		expected string
+	}{
+		{"缺省", nil, "0.85.1"},
+		{"旧版", []string{"0.85.1"}, "0.85.1"},
+		{"新版", []string{"1.0.0"}, "1.0.0"},
+		{"未知版本", []string{"1.1.0"}, "0.85.1"},
+		{"空值", []string{""}, "0.85.1"},
+		{"预发布", []string{"1.0.0-beta.1"}, "0.85.1"},
+		{"空格", []string{" 1.0.0 "}, "0.85.1"},
+		{"同值重复", []string{"1.0.0", "1.0.0"}, "0.85.1"},
+		{"混合重复", []string{"0.85.1", "1.0.0"}, "0.85.1"},
+		{"逗号合并", []string{"1.0.0,1.0.0"}, "0.85.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			for name, value := range map[string]string{
+				"X-Twork-Client-Version": "4.0.0", "X-Twork-Client-Capabilities": "model-routes-v3",
+				"X-Twork-Route-Mode": "model", "X-Twork-Agent-Runtime": "pi", "X-Twork-Wire-Api": "chat_completions",
+			} {
+				r.Header.Set(name, value)
+			}
+			for _, value := range tc.values {
+				r.Header.Add("X-Twork-Pi-Compatibility-Version", value)
+			}
+			policy, err := parseTworkModelRoute(r)
+			require.NoError(t, err)
+			assert.True(t, policy.ModelRoute)
+			assert.Equal(t, tc.expected, policy.PiCompatibilityVersion)
+		})
+	}
+}

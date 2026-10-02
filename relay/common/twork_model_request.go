@@ -28,8 +28,9 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 		return nil, err
 	}
 	body["model"] = info.UpstreamModelName
+	version := common.GetContextKeyString(c, constant.ContextKeyTworkPiCompatibilityVersion)
 	if info.ChannelSetting.TworkWireAPI == "chat_completions" {
-		adaptTworkChatRequest(body, info)
+		adaptTworkChatRequest(body, info, version)
 	} else {
 		if id, _ := body["previous_response_id"].(string); id != "" {
 			return nil, errors.New("模型级请求必须携带完整公开历史，不能使用渠道专属恢复 ID")
@@ -63,7 +64,7 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 		} else {
 			body["store"] = false
 			if reasoning, ok := body["reasoning"].(map[string]any); ok {
-				native := dto.GetTworkPiModelCompatibility(info.ChannelSetting.TworkPiCompatibility, info.UpstreamModelName)
+				native := dto.GetTworkPiModelCompatibility(info.ChannelSetting.TworkPiCompatibility, info.UpstreamModelName, version)
 				if effort, ok := reasoning["effort"].(string); ok {
 					_, mapped, _ := resolveTworkThinking(native, effort)
 					if mapped == nil {
@@ -81,9 +82,9 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 	return common.Marshal(body)
 }
 
-func adaptTworkChatRequest(body map[string]any, info *RelayInfo) {
+func adaptTworkChatRequest(body map[string]any, info *RelayInfo, version string) {
 	profile := info.ChannelSetting.TworkPiCompatibility
-	native := dto.GetTworkPiModelCompatibility(profile, info.UpstreamModelName)
+	native := dto.GetTworkPiModelCompatibility(profile, info.UpstreamModelName, version)
 	compat := native.Compat
 	if tools, ok := body["tools"].([]any); ok && len(tools) > 0 && compat.ZaiToolStream {
 		body["tool_stream"] = true
