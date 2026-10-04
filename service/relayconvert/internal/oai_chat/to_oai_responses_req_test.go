@@ -3,12 +3,30 @@ package oaichat
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestChatCompletionsRequestToResponsesRequestPreservesPromptCacheKey(t *testing.T) {
+	for _, key := range []string{"", "session-key", "引号\"、反斜杠\\与换行\n"} {
+		t.Run(key, func(t *testing.T) {
+			got, err := ChatCompletionsRequestToResponsesRequest(&dto.GeneralOpenAIRequest{
+				Model: "gpt-test", PromptCacheKey: key,
+				Messages: []dto.Message{{Role: "user", Content: "你好"}},
+			})
+			require.NoError(t, err)
+			body, err := common.Marshal(got)
+			require.NoError(t, err)
+			value := gjson.GetBytes(body, "prompt_cache_key")
+			assert.Equal(t, key != "", value.Exists())
+			assert.Equal(t, key, value.String())
+		})
+	}
+}
 
 func TestChatCompletionsRequestToResponsesRequestInstructionsAndTools(t *testing.T) {
 	req := &dto.GeneralOpenAIRequest{
