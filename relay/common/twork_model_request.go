@@ -44,6 +44,19 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 						return nil, errors.New("模型级请求必须携带完整公开历史，不能使用渠道专属历史引用或加密压缩")
 					}
 					if item["type"] == "reasoning" {
+						// 新版保留可移植的明文摘要；渠道签名、密文及恢复状态仍不回放。
+						if version == "1.0.0" {
+							summary, _ := item["summary"].([]any)
+							for _, entry := range summary {
+								part, ok := entry.(map[string]any)
+								if !ok || part["type"] != "summary_text" {
+									continue
+								}
+								if text, ok := part["text"].(string); ok && text != "" {
+									filtered = append(filtered, map[string]any{"role": "assistant", "content": text})
+								}
+							}
+						}
 						continue
 					}
 					delete(item, "id")
