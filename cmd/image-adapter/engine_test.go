@@ -43,7 +43,8 @@ func TestEnginePollsSameTaskAndReturnsActualImages(t *testing.T) {
 		}
 		return &TaskResult{URLs: []string{"https://images.example/test.png"}}, nil
 	}
-	engine := &Engine{Timeout: time.Second, PollInterval: time.Millisecond, DownloadClient: &http.Client{Transport: testTransport(func(r *http.Request) (*http.Response, error) {
+	// 此用例验证轮询和交付，不以墙钟时间作为验收；race/并发构建下保留足够解码预算。
+	engine := &Engine{Timeout: 30 * time.Second, PollInterval: time.Millisecond, DownloadClient: &http.Client{Transport: testTransport(func(r *http.Request) (*http.Response, error) {
 		require.Empty(t, r.Header.Get("Authorization"))
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(picture.Bytes()))}, nil
 	})}}
@@ -87,7 +88,7 @@ func TestEngineRetriesDownloadWithoutCreatingAnotherTask(t *testing.T) {
 		return &TaskResult{URLs: []string{"https://images.example/test.png"}}, nil
 	}}
 	downloads := 0
-	engine := &Engine{Timeout: 2 * time.Second, PollInterval: time.Millisecond, DownloadClient: &http.Client{Transport: testTransport(func(*http.Request) (*http.Response, error) {
+	engine := &Engine{Timeout: 30 * time.Second, PollInterval: time.Millisecond, DownloadClient: &http.Client{Transport: testTransport(func(*http.Request) (*http.Response, error) {
 		downloads++
 		if downloads == 1 {
 			return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader("busy"))}, nil

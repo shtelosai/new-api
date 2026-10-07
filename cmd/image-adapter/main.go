@@ -26,14 +26,19 @@ import (
 var revision = "dev"
 
 type ProviderConfig struct {
-	Adapter      string   `json:"adapter"`
-	BaseURL      string   `json:"base_url"`
-	APIKeyEnv    string   `json:"api_key_env"`
-	AuthTokenEnv string   `json:"auth_token_env"`
-	Models       []string `json:"models"`
+	Adapter       string   `json:"adapter"`
+	BaseURL       string   `json:"base_url"`
+	APIKeyEnv     string   `json:"api_key_env"`
+	AuthTokenEnv  string   `json:"auth_token_env"`
+	Models        []string `json:"models"`
+	AsyncEnabled  bool     `json:"async_enabled"`
+	UploadBaseURL string   `json:"upload_base_url,omitempty"`
+	CallbackURL   string   `json:"callback_url,omitempty"`
+	WebhookKeyEnv string   `json:"webhook_key_env,omitempty"`
 }
 
 type Config struct {
+	Async          AsyncConfig               `json:"async"`
 	Listen         string                    `json:"listen"`
 	TimeoutSeconds int                       `json:"timeout_seconds"`
 	PollIntervalMS int                       `json:"poll_interval_ms"`
@@ -42,11 +47,13 @@ type Config struct {
 }
 
 type Route struct {
-	Provider Provider
-	Token    string
-	Models   map[string]bool
+	Provider      Provider
+	AsyncProvider AsyncProvider
+	Token         string
+	Models        map[string]bool
 }
 type Server struct {
+	Async    *AsyncManager
 	Engine   *Engine
 	Routes   map[string]Route
 	Slots    chan struct{}
@@ -85,9 +92,25 @@ func configuredServer(config Config) (*Server, error) {
 		transport.ResponseHeaderTimeout = 60 * time.Second
 		client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 		var provider Provider
+		var asyncProvider AsyncProvider
 		switch p.Adapter {
 		case "apimart":
-			provider = &APIMart{BaseURL: base, Key: key, Client: client}
+			p := &APIMart{BaseURL: base, Key: key, Client: client}
+			provider, asyncProvider = p, p
+		case "kie":
+			uploadBase := strings.TrimRight(p.UploadBaseURL, "/")
+			if uploadBase == "" {
+				uploadBase = base
+			}
+			uploadURL, uploadErr := url.Parse(uploadBase)
+			if uploadErr != nil || uploadURL.Scheme != "https" || uploadURL.Hostname() == "" || uploadURL.User != nil || uploadURL.RawQuery != "" || uploadURL.Fragment != "" {
+				return nil, fmt.Errorf("Kie 上传地址无效")
+			}
+			callback, webhook := p.CallbackURL, os.Getenv(p.WebhookKeyEnv)
+			if callback != "" && webhook != "" && !validPublicImageURL(callback) {
+				return nil, fmt.Errorf("Kie 回调地址无效")
+			}
+			asyncProvider = &Kie{BaseURL: base, UploadBaseURL: uploadBase, Key: key, Client: client, CallbackURL: callback, WebhookKey: webhook}
 		default:
 			return nil, fmt.Errorf("供应商 %s 的适配器未实现", name)
 		}
@@ -98,7 +121,18 @@ func configuredServer(config Config) (*Server, error) {
 			}
 			models[m] = true
 		}
-		server.Routes[name] = Route{Provider: provider, Token: token, Models: models}
+		if !p.AsyncEnabled {
+			asyncProvider = nil
+		}
+		server.Routes[name] = Route{Provider: provider, AsyncProvider: asyncProvider, Token: token, Models: models}
+	}
+	if config.Async.Enabled {
+		manager, err := openAsyncManager(config.Async, server.Routes, asyncResultClient(), time.Duration(config.PollIntervalMS)*time.Millisecond)
+		if err != nil {
+			return nil, err
+		}
+		server.Async = manager
+		manager.Start()
 	}
 	return server, nil
 }
@@ -109,6 +143,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if asyncEndpoint(parts) {
+		s.serveAsync(w, r, parts)
+		return
+	}
 	if r.Method != "POST" || len(parts) != 4 || parts[1] != "v1" || parts[2] != "images" || (parts[3] != "generations" && parts[3] != "edits") {
 		writeError(w, apiError(404, "not_found", "接口不存在"))
 		return
@@ -116,6 +154,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route, ok := s.Routes[parts[0]]
 	if !ok || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+route.Token)) != 1 {
 		writeError(w, apiError(401, "invalid_api_key", "适配服务凭据无效"))
+		return
+	}
+	if route.Provider == nil {
+		writeError(w, apiError(404, "not_found", "该路由仅提供异步接口"))
 		return
 	}
 	select {
@@ -253,6 +295,9 @@ func main() {
 	handler, err := configuredServer(config)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if handler.Async != nil {
+		defer handler.Async.Close()
 	}
 	server := &http.Server{Addr: config.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

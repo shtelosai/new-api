@@ -50,6 +50,14 @@ func (channel *Channel) TworkRuntime() (string, error) {
 			return "", errors.New("旧 Codex 标记仅兼容 Responses")
 		}
 		return "codex", nil
+	case "image_async":
+		if wirePresent {
+			return "", errors.New("异步图片渠道不能配置聊天协议")
+		}
+		if _, _, err := channel.ImageJobProvider(); err != nil {
+			return "", err
+		}
+		return "image_async", nil
 	case "pi":
 		if wire != "responses" && wire != "chat_completions" {
 			return "", errors.New("Pi 渠道必须指定有效的 twork_wire_api")
@@ -100,7 +108,7 @@ func (channel *Channel) PreserveTworkSettings(existing *Channel) error {
 	if err := common.UnmarshalJsonStr(existingJSON, &stored); err != nil {
 		return err
 	}
-	for _, field := range []string{"twork_runtime", "twork_wire_api", "twork_pi_compatibility", "twork_display_mode"} {
+	for _, field := range []string{"twork_runtime", "twork_wire_api", "twork_pi_compatibility", "twork_display_mode", "twork_image_provider", "twork_image_family"} {
 		if _, _, err := common.CanonicalJSONStringField([]byte(incomingJSON), field); err != nil {
 			return err
 		}
@@ -185,4 +193,23 @@ func legacyChannelIDs(group, modelName string, policies ...TworkRoutePolicy) ([]
 		}
 	}
 	return ids, nil
+}
+
+// ImageJobProvider 严格解析异步图片的提供方与模型家族，拒绝大小写、重复键及未知值。
+func (channel *Channel) ImageJobProvider() (string, string, error) {
+	if channel.Setting == nil {
+		return "", "", errors.New("异步图片设置缺失")
+	}
+	provider, _, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_image_provider")
+	if err != nil {
+		return "", "", err
+	}
+	family, _, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_image_family")
+	if err != nil {
+		return "", "", err
+	}
+	if (provider != "kie" && provider != "apimart") || (family != "flare" && family != "sunburst") {
+		return "", "", errors.New("异步图片提供方或模型家族无效")
+	}
+	return provider, family, nil
 }

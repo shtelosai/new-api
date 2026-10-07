@@ -1,0 +1,40 @@
+{
+  "listen": "127.0.0.1:8320",
+  "timeout_seconds": 270,
+  "poll_interval_ms": 2000,
+  "max_in_flight": 4,
+  "async": {
+    "enabled": false,
+    "data_dir": "/var/lib/twork-image-adapter",
+    "workers": 2,
+    "max_pending": 100,
+    "task_timeout_seconds": 86400,
+    "retention_hours": 168
+  },
+  "providers": {
+    "apimart": {
+      "adapter": "apimart",
+      "base_url": "https://api.apimart.ai/v1",
+      "api_key_env": "APIMART_API_KEY",
+      "auth_token_env": "IMAGE_ADAPTER_APIMART_TOKEN",
+      "models": ["gpt-image-2.5-flare"]
+    },
+    "kie-async": {
+      "adapter": "kie",
+      "base_url": "https://api.kie.ai",
+      "upload_base_url": "https://api.kie.ai",
+      "api_key_env": "KIE_API_KEY",
+      "auth_token_env": "IMAGE_ADAPTER_KIE_ASYNC_TOKEN",
+      "async_enabled": true,
+      "models": ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]
+    },
+    "apimart-async": {
+      "adapter": "apimart",
+      "base_url": "https://api.apimart.ai/v1",
+      "api_key_env": "APIMART_API_KEY",
+      "auth_token_env": "IMAGE_ADAPTER_APIMART_ASYNC_TOKEN",
+      "async_enabled": true,
+      "models": ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]
+    }
+  }
+}

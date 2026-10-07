@@ -11,6 +11,8 @@ import (
 )
 
 type ChannelSettings struct {
+	TworkImageProvider string `json:"twork_image_provider,omitempty"`
+	TworkImageFamily   string `json:"twork_image_family,omitempty"`
 	// 已验收的图片档位，按 generation/edit 分开；缺省按 1K 能力兜底。
 	TworkImageResolutions map[string][]string `json:"twork_image_resolutions,omitempty"`
 

@@ -50,6 +50,9 @@ func addNewRecord(type_ int, id int, value int) {
 }
 
 func batchUpdate() {
+	// 覆盖 snapshot 到落库的整段，移交不能漏掉已经移出 stores 的在途增量。
+	imageJobAccounting.RLock()
+	defer imageJobAccounting.RUnlock()
 	// check if there's any data to update
 	hasData := false
 	for i := 0; i < BatchUpdateTypeCount; i++ {
@@ -70,8 +73,19 @@ func batchUpdate() {
 	stores := make([]map[int]int, BatchUpdateTypeCount)
 	for i := 0; i < BatchUpdateTypeCount; i++ {
 		batchUpdateLocks[i].Lock()
-		stores[i] = batchUpdateStores[i]
-		batchUpdateStores[i] = make(map[int]int)
+		stores[i] = make(map[int]int)
+		for id, value := range batchUpdateStores[i] {
+			if i == BatchUpdateTypeTokenQuota && imageJobAccounting.pending[id] != nil {
+				continue
+			}
+			if i == BatchUpdateTypeUserQuota || i == BatchUpdateTypeUsedQuota || i == BatchUpdateTypeRequestCount {
+				if _, frozen := imageJobAccounting.frozen[id]; frozen {
+					continue
+				}
+			}
+			stores[i][id] = value
+			delete(batchUpdateStores[i], id)
+		}
 		batchUpdateLocks[i].Unlock()
 	}
 
@@ -85,6 +99,7 @@ func batchUpdate() {
 				err := increaseTokenQuota(key, value)
 				if err != nil {
 					common.SysLog("failed to batch update token quota: " + err.Error())
+					imageJobRecordBatchAccountingFailure("tokerr", key)
 				}
 			case BatchUpdateTypeChannelUsedQuota:
 				updateChannelUsedQuota(key, value)
@@ -107,7 +122,9 @@ func batchUpdate() {
 		userIDs[key] = struct{}{}
 	}
 	for key := range userIDs {
-		updateUserQuotaUsedQuotaAndRequestCount(key, userQuotaStore[key], usedQuotaStore[key], requestCountStore[key])
+		if err := updateUserQuotaUsedQuotaAndRequestCount(key, userQuotaStore[key], usedQuotaStore[key], requestCountStore[key]); err != nil {
+			imageJobRecordBatchAccountingFailure("usrerr", key)
+		}
 	}
 	common.SysLog("batch update finished")
 }

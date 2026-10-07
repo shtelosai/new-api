@@ -127,6 +127,9 @@ func main() {
 	// Codex credential auto-refresh check every 10 minutes, refresh when expires within 1 day
 	service.StartCodexCredentialAutoRefreshTask()
 
+	stopImageJobs := service.StartImageJobWorker()
+	defer stopImageJobs()
+
 	// Subscription quota reset task (daily/weekly/monthly/custom)
 	service.StartSubscriptionQuotaResetTask()
 
@@ -345,6 +348,10 @@ func InitResources() error {
 	// Initialize Redis
 	err = common.InitRedisClient()
 	if err != nil {
+		return err
+	}
+	// 永久额度屏障须早于 worker、HTTP 与批量刷新恢复；已有屏障不能随创建开关关闭。
+	if err = model.InitImageJobAccountingBridge(context.Background()); err != nil {
 		return err
 	}
 

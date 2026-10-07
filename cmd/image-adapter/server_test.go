@@ -60,7 +60,7 @@ func TestHTTPRoutesGenerateAndEditThroughAPIMart(t *testing.T) {
 		}
 	}))
 	defer upstream.Close()
-	engine := &Engine{Timeout: time.Second, PollInterval: time.Millisecond, DownloadClient: &http.Client{Transport: testTransport(func(r *http.Request) (*http.Response, error) {
+	engine := &Engine{Timeout: 30 * time.Second, PollInterval: time.Millisecond, DownloadClient: &http.Client{Transport: testTransport(func(r *http.Request) (*http.Response, error) {
 		assert.Empty(t, r.Header.Get("Authorization"))
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(picture.Bytes()))}, nil
 	})}}

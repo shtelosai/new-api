@@ -245,6 +245,11 @@ func GetTokenByIds(id int, userId int) (*Token, error) {
 }
 
 func GetTokenById(id int) (*Token, error) {
+	imageJobAccounting.RLock()
+	defer imageJobAccounting.RUnlock()
+	if _, err := imageJobTokenAccountingMode(id); err != nil {
+		return nil, err
+	}
 	if id == 0 {
 		return nil, errors.New("id 为空！")
 	}
@@ -262,6 +267,18 @@ func GetTokenById(id int) (*Token, error) {
 }
 
 func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
+	imageJobAccounting.RLock()
+	defer imageJobAccounting.RUnlock()
+	if id, guarded := imageJobAccounting.keys[common.GenerateHMAC(key)]; guarded {
+		if _, err := imageJobTokenAccountingMode(id); err != nil {
+			return nil, err
+		}
+		var current Token
+		if err := DB.Where(commonKeyCol+" = ?", key).First(&current).Error; err != nil {
+			return nil, err
+		}
+		return &current, nil
+	}
 	defer func() {
 		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) && token != nil {
@@ -276,12 +293,21 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 		// Try Redis first
 		token, err := cacheGetTokenByKey(key)
 		if err == nil {
-			return token, nil
+			guarded, guardErr := imageJobTokenAccountingMode(token.Id)
+			if guardErr != nil {
+				return nil, guardErr
+			}
+			if !guarded {
+				return token, nil
+			}
 		}
 		// Don't return error - fall through to DB
 	}
 	fromDB = true
 	err = DB.Where(commonKeyCol+" = ?", key).First(&token).Error
+	if err == nil {
+		_, err = imageJobTokenAccountingMode(token.Id)
+	}
 	return token, err
 }
 
@@ -385,6 +411,11 @@ func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
+	guarded := lockImageJobAccountingMutation(tokenId, imageJobTokenAccountingMode)
+	defer imageJobAccounting.RUnlock()
+	if guarded {
+		return increaseTokenQuota(tokenId, quota)
+	}
 	if common.RedisEnabled {
 		gopool.Go(func() {
 			err := cacheIncrTokenQuota(key, int64(quota))
@@ -414,6 +445,11 @@ func increaseTokenQuota(id int, quota int) (err error) {
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
+	}
+	guarded := lockImageJobAccountingMutation(id, imageJobTokenAccountingMode)
+	defer imageJobAccounting.RUnlock()
+	if guarded {
+		return decreaseTokenQuota(id, quota)
 	}
 	if common.RedisEnabled {
 		gopool.Go(func() {

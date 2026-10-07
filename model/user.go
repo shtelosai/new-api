@@ -948,6 +948,27 @@ func ValidateAccessToken(token string) (*User, error) {
 
 // GetUserQuota gets quota from Redis first, falls back to DB if needed
 func GetUserQuota(id int, fromDB bool) (quota int, err error) {
+	if !fromDB {
+		imageJobAccounting.RLock()
+		guarded, guardErr := imageJobUserAccountingMode(id)
+		if guarded && guardErr == nil {
+			err = DB.Model(&User{}).Where("id = ?", id).Select("quota").Find(&quota).Error
+			imageJobAccounting.RUnlock()
+			return quota, err
+		}
+		imageJobAccounting.RUnlock()
+		if guardErr != nil {
+			return 0, guardErr
+		}
+	}
+	// 非 DB 分支由 GetUserCache 持有移交读锁，避免重复加读锁与等待中的移交写锁互锁。
+	if fromDB {
+		imageJobAccounting.RLock()
+		defer imageJobAccounting.RUnlock()
+		if _, err := imageJobUserAccountingMode(id); err != nil {
+			return 0, err
+		}
+	}
 	defer func() {
 		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) {
@@ -962,6 +983,9 @@ func GetUserQuota(id int, fromDB bool) (quota int, err error) {
 		quota, err := getUserQuotaCache(id)
 		if err == nil {
 			return quota, nil
+		}
+		if errors.Is(err, errImageJobAccountingFrozen) {
+			return 0, err
 		}
 		// Don't return error - fall through to DB
 	}
@@ -1054,12 +1078,19 @@ func IncreaseUserQuota(id int, quota int, db bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
-	gopool.Go(func() {
-		err := cacheIncrUserQuota(id, int64(quota))
-		if err != nil {
-			common.SysLog("failed to increase user quota: " + err.Error())
-		}
-	})
+	guarded := lockImageJobAccountingMutation(id, imageJobUserAccountingMode)
+	defer imageJobAccounting.RUnlock()
+	if guarded {
+		return increaseUserQuota(id, quota)
+	}
+	if common.RedisEnabled {
+		gopool.Go(func() {
+			err := cacheIncrUserQuota(id, int64(quota))
+			if err != nil {
+				common.SysLog("failed to increase user quota: " + err.Error())
+			}
+		})
+	}
 	if !db && common.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
 		return nil
@@ -1079,12 +1110,19 @@ func DecreaseUserQuota(id int, quota int, db bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
-	gopool.Go(func() {
-		err := cacheDecrUserQuota(id, int64(quota))
-		if err != nil {
-			common.SysLog("failed to decrease user quota: " + err.Error())
-		}
-	})
+	guarded := lockImageJobAccountingMutation(id, imageJobUserAccountingMode)
+	defer imageJobAccounting.RUnlock()
+	if guarded {
+		return decreaseUserQuota(id, quota)
+	}
+	if common.RedisEnabled {
+		gopool.Go(func() {
+			err := cacheDecrUserQuota(id, int64(quota))
+			if err != nil {
+				common.SysLog("failed to decrease user quota: " + err.Error())
+			}
+		})
+	}
 	if !db && common.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeUserQuota, id, -quota)
 		return nil
@@ -1128,6 +1166,12 @@ func UpdateUserLastLoginAt(id int) {
 }
 
 func UpdateUserUsedQuotaAndRequestCount(id int, quota int) {
+	guarded := lockImageJobAccountingMutation(id, imageJobUserAccountingMode)
+	defer imageJobAccounting.RUnlock()
+	if guarded {
+		updateUserUsedQuotaAndRequestCount(id, quota, 1)
+		return
+	}
 	if common.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeUsedQuota, id, quota)
 		addNewRecord(BatchUpdateTypeRequestCount, id, 1)
@@ -1154,9 +1198,9 @@ func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
 	//}
 }
 
-func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, requestCount int) {
+func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, requestCount int) error {
 	if quota == 0 && usedQuota == 0 && requestCount == 0 {
-		return
+		return nil
 	}
 
 	err := DB.Model(&User{}).Where("id = ?", id).Updates(
@@ -1169,6 +1213,7 @@ func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, r
 	if err != nil {
 		common.SysLog("failed to batch update user quota, used quota and request count: " + err.Error())
 	}
+	return err
 }
 
 func updateUserUsedQuota(id int, quota int) {

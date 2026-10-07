@@ -1,15 +1,15 @@
 [Unit]
-Description=独立异步图片适配服务
+Description=TWork 持久异步图片适配服务
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 DynamicUser=yes
-StateDirectory=twork-image-adapter
+StateDirectory=twork-image-adapter-async
 StateDirectoryMode=0700
-EnvironmentFile=/etc/twork-image-adapter/service.env
-ExecStart=/opt/twork-image-adapter/current/image-adapter /etc/twork-image-adapter/config.json
+EnvironmentFile=/etc/twork-image-adapter-async/service.env
+ExecStart=/opt/twork-image-adapter-async/current/image-adapter /etc/twork-image-adapter-async/config.json
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=300

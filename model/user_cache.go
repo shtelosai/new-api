@@ -99,6 +99,19 @@ func updateUserCache(user User) error {
 
 // GetUserCache gets complete user cache from hash
 func GetUserCache(userId int) (userCache *UserBase, err error) {
+	imageJobAccounting.RLock()
+	defer imageJobAccounting.RUnlock()
+	guarded, err := imageJobUserAccountingMode(userId)
+	if err != nil {
+		return nil, err
+	}
+	if guarded {
+		var user User
+		if err := DB.First(&user, userId).Error; err != nil {
+			return nil, err
+		}
+		return user.ToBaseUser(), nil
+	}
 	var user *User
 	var fromDB bool
 	defer func() {
