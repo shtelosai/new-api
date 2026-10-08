@@ -69,6 +69,57 @@ func imageJobJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(b)
 }
 
+func TestSunburstFallbackAcrossFourRoutesRetainsOneTaskAndCharge(t *testing.T) {
+	var paths, models []string
+	var id string
+	picture := imageJobPNG(t, 1024, 1024)
+	s, token, server := imageJobServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/result") {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(picture)
+			return
+		}
+		var body map[string]any
+		require.NoError(t, common.DecodeJson(r.Body, &body))
+		if id != "" {
+			assert.Equal(t, id, body["job_id"])
+		}
+		id = body["job_id"].(string)
+		paths = append(paths, r.URL.Path)
+		models = append(models, body["model"].(string))
+		if len(paths) < 4 {
+			imageJobJSON(w, 202, map[string]any{"id": id, "status": "failed", "retryable": true, "error_code": "kie_submit_rejected"})
+			return
+		}
+		imageJobJSON(w, 202, map[string]any{"id": id, "status": "succeeded", "provider_task_id": "accepted-once", "image_count": 1})
+	})
+	for _, table := range []any{&model.TokenModelChannel{}, &model.Ability{}, &model.Channel{}} {
+		require.NoError(t, model.DB.Where("1 = 1").Delete(table).Error)
+	}
+	for i, route := range []string{"kie-sunburst", "apimart-sunburst", "kie-flare", "apimart-flare"} {
+		parts := strings.Split(route, "-")
+		name := "twork-image-" + parts[1] + "-async"
+		channel := model.Channel{Id: i + 3, Status: common.ChannelStatusEnabled, Key: "adapter-key", Models: name, Group: "default", BaseURL: common.GetPointer(server.URL + "/" + route), Priority: common.GetPointer(int64(400 - i*100)), Setting: common.GetPointer(`{"twork_runtime":"image_async","twork_image_provider":"` + parts[0] + `","twork_image_family":"` + parts[1] + `"}`)}
+		require.NoError(t, model.DB.Create(&channel).Error)
+		require.NoError(t, model.DB.Create(&model.Ability{Group: "default", Model: name, ChannelId: channel.Id, Enabled: true}).Error)
+		require.NoError(t, model.DB.Create(&model.TokenModelChannel{TokenId: token.Id, ModelId: name, ChannelId: channel.Id}).Error)
+	}
+	job, _, err := s.Create(context.Background(), token.Id, model.ImageJobRequest{ClientRequestID: "four-routes", ClientSessionID: "s", Prompt: "杯子", OutputFormat: "png"})
+	require.NoError(t, err)
+	for range 5 {
+		require.NoError(t, s.RunOnce(context.Background()))
+	}
+	assert.Equal(t, []string{"/kie-sunburst/v1/image-tasks", "/apimart-sunburst/v1/image-tasks", "/kie-flare/v1/image-tasks", "/apimart-flare/v1/image-tasks"}, paths)
+	assert.Equal(t, []string{"gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.5-flare"}, models)
+	current, err := model.GetImageJob(context.Background(), token.Id, job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "succeeded", current.Status)
+	assert.Equal(t, 150000, current.ChargedQuota)
+	var count int64
+	require.NoError(t, model.LOG_DB.Model(&model.Log{}).Where("request_id = ?", "imagejob_"+job.ID).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
 func TestImageJobWorkerRestartRetrievesSameTaskAndChargesExactlyOnce(t *testing.T) {
 	var posts atomic.Int32
 	var jobID string

@@ -391,6 +391,12 @@ func (m *AsyncManager) advance(ctx context.Context, task *asyncTask) error {
 				return m.fail(task, "image_transparency_mismatch", false, false)
 			}
 		}
+		if _, isKie := route.AsyncProvider.(*Kie); isKie {
+			picture, format, err = encodeKieOutput(picture, decoded, format, request.OutputFormat)
+			if err != nil {
+				return m.fail(task, "image_result_invalid", false, false)
+			}
+		}
 		if request.OutputFormat != "" && request.OutputFormat != format {
 			return m.fail(task, "image_output_format_mismatch", false, false)
 		}

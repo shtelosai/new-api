@@ -103,19 +103,20 @@ func (s *ImageJobService) advance(ctx context.Context, job *model.ImageJob) erro
 		if channel == nil {
 			return model.SettleImageJob(ctx, job.ID, false, "image_no_channel", job.LeaseOwner)
 		}
-		provider, _, err := channel.ImageJobProvider()
+		provider, family, err := channel.ImageJobProvider()
 		if err != nil {
 			return err
 		}
 		attempted = append(attempted, channel.Id)
 		encoded, _ := common.Marshal(attempted)
-		if err = model.UpdateImageJobLease(ctx, job, map[string]any{"status": "submitting", "channel_id": channel.Id, "adapter_base_url": *channel.BaseURL, "image_provider": provider, "attempted_channels": string(encoded)}); err != nil {
+		if err = model.UpdateImageJobLease(ctx, job, map[string]any{"status": "submitting", "channel_id": channel.Id, "adapter_base_url": *channel.BaseURL, "image_provider": provider, "model_family": family, "attempted_channels": string(encoded)}); err != nil {
 			return err
 		}
 		job.Status = "submitting"
 		job.ChannelID = channel.Id
 		job.AdapterBaseURL = *channel.BaseURL
 		job.ImageProvider = provider
+		job.ModelFamily = family
 		job.AttemptedChannels = string(encoded)
 		return s.submit(ctx, job, request, channel)
 	}

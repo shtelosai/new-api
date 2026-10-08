@@ -131,7 +131,7 @@ func TestImageJobHTTPRejectsClientPriceModelCountAndUnknownFields(t *testing.T) 
 	var cap map[string]any
 	require.NoError(t, common.Unmarshal(w.Body.Bytes(), &cap))
 	assert.Equal(t, true, cap["async"])
-	assert.Equal(t, []any{"1k"}, cap["resolutions"])
+	assert.Equal(t, []any{"1k", "2k", "4k"}, cap["resolutions"])
 	assert.Equal(t, false, cap["supports"].(map[string]any)["mask"])
 	var count int64
 	require.NoError(t, model.DB.Model(&model.ImageJob{}).Count(&count).Error)

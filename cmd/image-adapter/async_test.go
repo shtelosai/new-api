@@ -214,13 +214,13 @@ func TestAsyncRejectsUnsupportedAndInvalidBeforeSubmission(t *testing.T) {
 		retryable bool
 	}{
 		{"quality", func(r *AsyncRequest) { r.Quality = "high" }, "unsupported_image_options", true},
-		{"format", func(r *AsyncRequest) { r.OutputFormat = "png" }, "unsupported_image_options", true},
+		{"format", func(r *AsyncRequest) { r.OutputFormat = "webp" }, "unsupported_image_options", true},
 		{"ratio", func(r *AsyncRequest) { r.Size = "5:4" }, "unsupported_image_options", true},
 		{"private", func(r *AsyncRequest) { r.ImageURLs = []string{"https://127.0.0.1/secret"} }, "invalid_request_error", false},
 		{"credential", func(r *AsyncRequest) { r.ImageURLs = []string{"https://token@example.com/secret"} }, "invalid_request_error", false},
 		{"broken", func(r *AsyncRequest) { r.ImageURLs = []string{"data:image/png;base64,YmFk"} }, "invalid_image_input", false},
 		{"path", func(r *AsyncRequest) { r.JobID = "../escape" }, "invalid_request_error", false},
-		{"mismatched family", func(r *AsyncRequest) { r.Resolution = "4k" }, "invalid_request_error", false},
+		{"unknown family", func(r *AsyncRequest) { r.Model = "gpt-image-unknown" }, "invalid_request_error", false},
 		{"compression", func(r *AsyncRequest) { n := 101; r.OutputCompression = &n; r.OutputFormat = "jpeg" }, "invalid_request_error", false},
 		{"mask", func(r *AsyncRequest) { r.MaskURL = "https://example.com/mask.png" }, "invalid_request_error", false},
 	} {
@@ -829,4 +829,17 @@ func TestAsyncUnknownSurvivesRetentionAndRestart(t *testing.T) {
 	require.Nil(t, e)
 	assert.Equal(t, current.Key, replay.Key)
 	assert.Equal(t, "unknown", replay.Status)
+}
+
+func TestSunburstAndFlareAcceptEveryResolutionWithoutDiscardingOutputOptions(t *testing.T) {
+	for _, family := range []string{"sunburst", "flare"} {
+		for _, resolution := range []string{"1k", "2k", "4k"} {
+			for _, format := range []string{"", "png", "jpeg"} {
+				request := &AsyncRequest{JobID: "policy-test", Model: "gpt-image-2.5-" + family, Prompt: "杯子", Size: "1:1", Resolution: resolution, OutputFormat: format}
+				require.Nil(t, (&Kie{}).ValidateTask(request), "%s/%s/%s", family, resolution, format)
+				require.Nil(t, (&APIMart{}).ValidateTask(request))
+				assert.Equal(t, format, request.OutputFormat)
+			}
+		}
+	}
 }

@@ -79,3 +79,9 @@ APIMart 新接口直接传比例和原生档位，不使用旧同步接口的像
 默认完全依赖安全轮询，不需要配置 HMAC 或开公网监听。若已有外部代理能把回调转发到私网，可在 Kie 路由设置 `callback_url` 和 `webhook_key_env`，路由为 `/{route}/v1/image-tasks/callback`。只有两项均配置才发送 callBackUrl；缺 HMAC 时正常轮询。
 
 签名采用 Kie 文档约定的 Base64(HMAC-SHA256(`taskId.timestamp`))，验证时间戳±300秒和 route 内的任务关联。签名不覆盖结果正文，因此回调只能提前触发查询，绝不采信 callback 中的 URL、成功状态或扣费信息；重复通知也不创建任务。不要改成本服务监听公网。
+
+### Sunburst 与旧同步 Kie
+
+- Sunburst、Flare 均接受 1K/2K/4K；Kie 同步入口须显式设置 `sync_enabled: true`，原异步 route 不自动开放同步接口。
+- Kie 支持请求 PNG/JPEG：若上游格式不同，使用原始像素尺寸重新编码交付，不插值放大、不再次生成；WebP、指定压缩、质量及蒙版仍交由具备能力的 APIMart 渠道。
+- 部署保留原 `kie-async` / `apimart-async` route，并增加每个家族独立的 route；旧受理任务始终沿原路径恢复。

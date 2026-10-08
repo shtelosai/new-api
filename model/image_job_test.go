@@ -40,6 +40,15 @@ func imageJobFixture(t *testing.T) (*Token, *Token) {
 	return a, b
 }
 
+func TestImageJobViewKeepsLegacyFamilySlotAndReportsActualSunburst(t *testing.T) {
+	view := (ImageJob{Resolution: "1k", ModelFamily: "sunburst"}).View()
+	assert.Equal(t, "flare", view.ModelFamily)
+	assert.Equal(t, "sunburst", view.UpstreamModelFamily)
+	view = (ImageJob{Resolution: "4k", ModelFamily: "flare"}).View()
+	assert.Equal(t, "sunburst", view.ModelFamily)
+	assert.Equal(t, "flare", view.UpstreamModelFamily)
+}
+
 func TestImageJobReserveReplayConflictAndExactTokenOwnership(t *testing.T) {
 	a, b := imageJobFixture(t)
 	r := ImageJobRequest{ClientRequestID: "request-1", ClientSessionID: "session-1", Prompt: "一只蓝色杯子"}
@@ -148,12 +157,16 @@ func TestImageJobRuntimeNeverEntersLegacySelection(t *testing.T) {
 	a, _ := imageJobFixture(t)
 	channels, err := ImageJobChannels(context.Background(), a.Id, ImageJobRequest{Resolution: "1k", Size: "1:1", Background: "opaque"})
 	require.NoError(t, err)
-	require.Len(t, channels, 1)
-	assert.False(t, channels[0].AllowsLegacyRuntime())
+	require.Len(t, channels, 2)
+	for _, channel := range channels {
+		assert.False(t, channel.AllowsLegacyRuntime())
+	}
 	ids, err := legacyChannelIDs("default", "twork-image-flare-async")
 	require.NoError(t, err)
 	assert.Empty(t, ids)
-	require.NoError(t, DB.Create(&ChannelModelDisabled{ChannelId: channels[0].Id, Model: "twork-image-flare-async", Source: "manual"}).Error)
+	for _, channel := range channels {
+		require.NoError(t, DB.Create(&ChannelModelDisabled{ChannelId: channel.Id, Model: channel.Models, Source: "manual"}).Error)
+	}
 	channels, err = ImageJobChannels(context.Background(), a.Id, ImageJobRequest{Resolution: "1k", Size: "1:1", Background: "opaque"})
 	require.NoError(t, err)
 	assert.Empty(t, channels)
@@ -190,14 +203,14 @@ func TestImageJobLeaseRejectsStaleSettlementAndCapabilityFiltering(t *testing.T)
 	current, err := GetImageJob(context.Background(), a.Id, job.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 150000, current.ReservedQuota)
-	for _, r := range []ImageJobRequest{{Resolution: "1k", Size: "1:1", OutputFormat: "png"}, {Resolution: "1k", Size: "5:4"}, {Resolution: "1k", Size: "1:1", MaskURL: "https://example.test/mask.png"}, {Resolution: "1k", Size: "1:1", Quality: "high"}} {
+	for _, r := range []ImageJobRequest{{Resolution: "1k", Size: "1:1", OutputFormat: "webp"}, {Resolution: "1k", Size: "5:4"}, {Resolution: "1k", Size: "1:1", MaskURL: "https://example.test/mask.png"}, {Resolution: "1k", Size: "1:1", Quality: "high"}} {
 		channels, err := ImageJobChannels(context.Background(), a.Id, r)
 		require.NoError(t, err)
 		assert.Empty(t, channels)
 	}
 	channels, err := ImageJobChannels(context.Background(), a.Id, ImageJobRequest{Resolution: "1k", Size: "1:1", Background: "transparent"})
 	require.NoError(t, err)
-	require.Len(t, channels, 1)
+	require.Len(t, channels, 2)
 	require.NoError(t, DB.Model(&Token{}).Where("id = ?", a.Id).Updates(map[string]any{"model_limits_enabled": true, "model_limits": "another-model"}).Error)
 	channels, err = ImageJobChannels(context.Background(), a.Id, request)
 	require.NoError(t, err)
@@ -275,4 +288,28 @@ func TestImageJobLeasePicksUnpolledTasksBeforeOlderRunningTasks(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	assert.Equal(t, newest.ID, claimed.ID)
+}
+
+func TestImageJobSunburstPreferredAtEveryResolutionWithAuthorizedFlareFallback(t *testing.T) {
+	for _, resolution := range []string{"1k", "2k", "4k"} {
+		t.Run(resolution, func(t *testing.T) {
+			token, _ := imageJobFixture(t)
+			request := ImageJobRequest{ClientRequestID: "sunburst-policy", ClientSessionID: "s", Prompt: "杯子", Resolution: resolution, OutputFormat: "png"}
+			require.NoError(t, request.Normalize())
+			channels, err := ImageJobChannels(context.Background(), token.Id, request)
+			require.NoError(t, err)
+			require.Len(t, channels, 2)
+			assert.Equal(t, 9127, channels[0].Id)
+			assert.Equal(t, 9126, channels[1].Id)
+			require.NoError(t, DB.Model(&Token{}).Where("id = ?", token.Id).Updates(map[string]any{"model_limits_enabled": true, "model_limits": "twork-image-flare-async"}).Error)
+			channels, err = ImageJobChannels(context.Background(), token.Id, request)
+			require.NoError(t, err)
+			require.Len(t, channels, 1)
+			assert.Equal(t, 9126, channels[0].Id)
+			require.NoError(t, DB.Where("token_id = ? AND channel_id = ?", token.Id, 9126).Delete(&TokenModelChannel{}).Error)
+			channels, err = ImageJobChannels(context.Background(), token.Id, request)
+			require.NoError(t, err)
+			assert.Empty(t, channels)
+		})
+	}
 }

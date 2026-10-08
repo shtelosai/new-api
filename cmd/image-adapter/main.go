@@ -32,6 +32,7 @@ type ProviderConfig struct {
 	AuthTokenEnv  string   `json:"auth_token_env"`
 	Models        []string `json:"models"`
 	AsyncEnabled  bool     `json:"async_enabled"`
+	SyncEnabled   bool     `json:"sync_enabled,omitempty"`
 	UploadBaseURL string   `json:"upload_base_url,omitempty"`
 	CallbackURL   string   `json:"callback_url,omitempty"`
 	WebhookKeyEnv string   `json:"webhook_key_env,omitempty"`
@@ -110,7 +111,11 @@ func configuredServer(config Config) (*Server, error) {
 			if callback != "" && webhook != "" && !validPublicImageURL(callback) {
 				return nil, fmt.Errorf("Kie 回调地址无效")
 			}
-			asyncProvider = &Kie{BaseURL: base, UploadBaseURL: uploadBase, Key: key, Client: client, CallbackURL: callback, WebhookKey: webhook}
+			kie := &Kie{BaseURL: base, UploadBaseURL: uploadBase, Key: key, Client: client, CallbackURL: callback, WebhookKey: webhook}
+			asyncProvider = kie
+			if p.SyncEnabled {
+				provider = kie
+			}
 		default:
 			return nil, fmt.Errorf("供应商 %s 的适配器未实现", name)
 		}

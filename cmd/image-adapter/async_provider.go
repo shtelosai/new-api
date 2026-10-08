@@ -82,9 +82,6 @@ func validateAsyncRequest(r *AsyncRequest) *AsyncError {
 	if r.Resolution != "1k" && r.Resolution != "2k" && r.Resolution != "4k" {
 		return asyncError(400, "invalid_request_error", "分辨率档位无效", false)
 	}
-	if r.Resolution == "1k" && r.Model != "gpt-image-2.5-flare" || r.Resolution != "1k" && r.Model != "gpt-image-2.5-sunburst" {
-		return asyncError(400, "invalid_request_error", "1K 使用 Flare，2K/4K 使用 Sunburst", false)
-	}
 	if r.OutputFormat == "auto" {
 		r.OutputFormat = ""
 	}
@@ -313,7 +310,7 @@ func (p *Kie) ValidateTask(r *AsyncRequest) *AsyncError {
 	if err := validateAsyncRequest(r); err != nil {
 		return err
 	}
-	if !kieRatios[r.Size] || r.OutputFormat != "" || r.OutputCompression != nil || r.Quality != "" || r.MaskURL != "" {
+	if !kieRatios[r.Size] || (r.OutputFormat != "" && r.OutputFormat != "png" && r.OutputFormat != "jpeg") || r.OutputCompression != nil || r.Quality != "" || r.MaskURL != "" {
 		return asyncError(400, "unsupported_image_options", "本渠道不支持指定比例、格式、压缩、质量或蒙版参数", true)
 	}
 	return nil

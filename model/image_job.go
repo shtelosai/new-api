@@ -131,12 +131,7 @@ func stringsIn(values []string, value string) bool {
 	}
 	return false
 }
-func (r ImageJobRequest) Family() string {
-	if r.Resolution == "1k" {
-		return "flare"
-	}
-	return "sunburst"
-}
+func (r ImageJobRequest) Family() string    { return "sunburst" }
 func (r ImageJobRequest) ModelName() string { return "twork-image-" + r.Family() + "-async" }
 func (r ImageJobRequest) Price() (int, int) {
 	switch r.Resolution {
@@ -198,26 +193,32 @@ type ImageJob struct {
 }
 
 type ImageJobView struct {
-	ID              string `json:"id"`
-	Status          string `json:"status"`
-	ClientRequestID string `json:"client_request_id"`
-	ClientSessionID string `json:"client_session_id"`
-	ModelFamily     string `json:"model_family"`
-	Resolution      string `json:"resolution"`
-	Size            string `json:"size"`
-	PriceCents      int    `json:"price_cents"`
-	CreatedAt       int64  `json:"created_at"`
-	UpdatedAt       int64  `json:"updated_at"`
-	ExpiresAt       int64  `json:"expires_at"`
-	CanDownload     bool   `json:"can_download"`
-	ActualSize      string `json:"actual_size,omitempty"`
-	OutputFormat    string `json:"output_format,omitempty"`
-	Bytes           int64  `json:"bytes,omitempty"`
-	ErrorCode       string `json:"error_code,omitempty"`
+	ID                  string `json:"id"`
+	Status              string `json:"status"`
+	ClientRequestID     string `json:"client_request_id"`
+	ClientSessionID     string `json:"client_session_id"`
+	ModelFamily         string `json:"model_family"`
+	UpstreamModelFamily string `json:"upstream_model_family,omitempty"`
+	Resolution          string `json:"resolution"`
+	Size                string `json:"size"`
+	PriceCents          int    `json:"price_cents"`
+	CreatedAt           int64  `json:"created_at"`
+	UpdatedAt           int64  `json:"updated_at"`
+	ExpiresAt           int64  `json:"expires_at"`
+	CanDownload         bool   `json:"can_download"`
+	ActualSize          string `json:"actual_size,omitempty"`
+	OutputFormat        string `json:"output_format,omitempty"`
+	Bytes               int64  `json:"bytes,omitempty"`
+	ErrorCode           string `json:"error_code,omitempty"`
 }
 
 func (j ImageJob) View() ImageJobView {
-	return ImageJobView{ID: j.ID, Status: j.Status, ClientRequestID: j.ClientRequestID, ClientSessionID: j.ClientSessionID, ModelFamily: j.ModelFamily, Resolution: j.Resolution, Size: j.Size, PriceCents: j.PriceCents, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt, ExpiresAt: j.ExpiresAt, CanDownload: j.Status == "succeeded" && j.ExpiresAt > time.Now().Unix(), ActualSize: j.ActualSize, OutputFormat: j.OutputFormat, Bytes: j.Bytes, ErrorCode: j.ErrorCode}
+	// v1 客户端曾按分辨率校验此字段；保留兼容槽位，实际模型单独返回。
+	legacyFamily := "sunburst"
+	if j.Resolution == "1k" {
+		legacyFamily = "flare"
+	}
+	return ImageJobView{ID: j.ID, Status: j.Status, ClientRequestID: j.ClientRequestID, ClientSessionID: j.ClientSessionID, ModelFamily: legacyFamily, UpstreamModelFamily: j.ModelFamily, Resolution: j.Resolution, Size: j.Size, PriceCents: j.PriceCents, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt, ExpiresAt: j.ExpiresAt, CanDownload: j.Status == "succeeded" && j.ExpiresAt > time.Now().Unix(), ActualSize: j.ActualSize, OutputFormat: j.OutputFormat, Bytes: j.Bytes, ErrorCode: j.ErrorCode}
 }
 func (j ImageJob) Terminal() bool {
 	return stringsIn([]string{"succeeded", "failed", "canceled", "expired"}, j.Status)
@@ -269,11 +270,9 @@ func imageJobChannels(db *gorm.DB, tokenID int, r ImageJobRequest) ([]*Channel, 
 	if !imageJobGroupAllowed(user.Group, group) || !ratio_setting.ContainsGroupRatio(group) || group == "auto" {
 		return nil, ErrTworkRouteDenied
 	}
-	if token.ModelLimitsEnabled && !token.GetModelLimitsMap()[r.ModelName()] {
-		return []*Channel{}, nil
-	}
-	grants := db.Model(&TokenModelChannel{}).Select("channel_id").Where("token_id = ? AND model_id = ?", tokenID, r.ModelName())
-	abilities := db.Model(&Ability{}).Select("channel_id").Where(map[string]any{"group": group, "model": r.ModelName(), "enabled": true})
+	models := []string{"twork-image-sunburst-async", "twork-image-flare-async"}
+	grants := db.Model(&TokenModelChannel{}).Select("channel_id").Where("token_id = ? AND model_id IN ?", tokenID, models)
+	abilities := db.Model(&Ability{}).Select("channel_id").Where(map[string]any{"group": group, "enabled": true}).Where("model IN ?", models)
 	var channels []*Channel
 	if err := db.Where("id IN (?) AND id IN (?) AND status = ?", grants, abilities, common.ChannelStatusEnabled).Find(&channels).Error; err != nil {
 		return nil, err
@@ -285,17 +284,32 @@ func imageJobChannels(db *gorm.DB, tokenID int, r ImageJobRequest) ([]*Channel, 
 			continue
 		}
 		provider, family, err := ch.ImageJobProvider()
-		if err != nil || family != r.Family() {
+		if err != nil {
 			continue
 		}
-		if !stringsIn(strings.Split(ch.Models, ","), r.ModelName()) || !stringsIn(strings.Split(ch.Group, ","), group) || ch.BaseURL == nil || *ch.BaseURL == "" || ch.Key == "" || ch.ChannelInfo.IsMultiKey {
+		channelModel := "twork-image-" + family + "-async"
+		if token.ModelLimitsEnabled && !token.GetModelLimitsMap()[channelModel] {
 			continue
 		}
-		if provider == "kie" && (r.MaskURL != "" || r.Quality != "" || r.OutputFormat != "" || r.OutputCompression != nil || !ImageJobKieSize(r.Size)) {
+		// 候选跨模型时仍逐对核对授权，不能把同一渠道的其他模型权限借过来。
+		var granted, enabled int64
+		if err := db.Model(&TokenModelChannel{}).Where("token_id = ? AND channel_id = ? AND model_id = ?", tokenID, ch.Id, channelModel).Count(&granted).Error; err != nil {
+			return nil, err
+		}
+		if err := db.Model(&Ability{}).Where(map[string]any{"group": group, "model": channelModel, "channel_id": ch.Id, "enabled": true}).Count(&enabled).Error; err != nil {
+			return nil, err
+		}
+		if granted == 0 || enabled == 0 {
+			continue
+		}
+		if !stringsIn(strings.Split(ch.Models, ","), channelModel) || !stringsIn(strings.Split(ch.Group, ","), group) || ch.BaseURL == nil || *ch.BaseURL == "" || ch.Key == "" || ch.ChannelInfo.IsMultiKey {
+			continue
+		}
+		if provider == "kie" && (r.MaskURL != "" || r.Quality != "" || !stringsIn([]string{"", "png", "jpeg"}, r.OutputFormat) || r.OutputCompression != nil || !ImageJobKieSize(r.Size)) {
 			continue
 		}
 		var disabled int64
-		if err := db.Model(&ChannelModelDisabled{}).Where("channel_id = ? AND model IN ?", ch.Id, []string{r.ModelName(), "gpt-image-2.5-" + r.Family()}).Count(&disabled).Error; err != nil {
+		if err := db.Model(&ChannelModelDisabled{}).Where("channel_id = ? AND model IN ?", ch.Id, []string{channelModel, "gpt-image-2.5-" + family}).Count(&disabled).Error; err != nil {
 			return nil, err
 		}
 		if disabled > 0 {
@@ -304,6 +318,11 @@ func imageJobChannels(db *gorm.DB, tokenID int, r ImageJobRequest) ([]*Channel, 
 		valid = append(valid, ch)
 	}
 	sort.SliceStable(valid, func(i, j int) bool {
+		_, familyA, _ := valid[i].ImageJobProvider()
+		_, familyB, _ := valid[j].ImageJobProvider()
+		if familyA != familyB {
+			return familyA == "sunburst"
+		}
 		a, b := int64(0), int64(0)
 		if valid[i].Priority != nil {
 			a = *valid[i].Priority

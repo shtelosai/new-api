@@ -64,3 +64,12 @@ go test ./model -run 'TworkRuntime|TworkChannel|LegacyRuntime|ImageJob' -count=1
 ```
 
 验收必须补生产相同 MySQL/PostgreSQL 的并发事务、真实提供方、旧用户同步回归以及缓存兼容后，才可声明可上线。当前本地 SQLite/httptest 不替代真实计费和生产验收。
+
+## Sunburst 优先路由（2026-10-08）
+
+- 新任务所有档位先选 Sunburst，再选同档 Flare；同家族异步渠道保持 Kie 优先、APIMart 次之，精确授权与参数能力仍先于优先级过滤。
+- 同一提供方的两种模型必须使用独立 adapter route，防止确定性拒绝后跨模型兜底与原 `route + job_id` 幂等记录冲突；旧 route 继续保留给已受理任务。
+- `ImageJob.ModelFamily` 记录实际选择的模型；v1 响应 `model_family` 保留旧档位槽位，`upstream_model_family` 返回实际模型，兼容已经安装的客户端。
+- 旧同步池优先 APIMart Sunburst、其次 Kie Sunburst，再用 Kie/APIMart Flare；价格仍为每张 0.30 元，等待上限保持原值。Kie Sunburst 改图实测可超过该上限，受理后超时不转投其他渠道。
+- `reconcile_sunburst.py` 默认只读预览；应用时备份现有渠道和价格，仅修改指定图片渠道。配置完成后还须按原图片规则同步新同步渠道授权及后端池名单。
+- 已有额度 guard 时必须单写切换，不能并行启动两个网关；`scripts/release-tcp-hold.py` 可在零在途切换时短暂等待新连接，就绪后原样透传。45 秒内未就绪必须恢复旧镜像，禁止强杀在途用户请求。

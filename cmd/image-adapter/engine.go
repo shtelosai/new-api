@@ -17,6 +17,8 @@ import (
 	"net/netip"
 	"net/url"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // Provider 只处理供应商协议；轮询、取消和交付由 Engine 统一管理。
@@ -97,7 +99,32 @@ func (e *Engine) Generate(ctx context.Context, provider Provider, request *Image
 			return nil, pollErr
 		}
 		if pollErr == nil && task != nil && !task.Pending {
-			return e.download(ctx, task, request)
+			result, err := e.download(ctx, task, request)
+			if err != nil {
+				return nil, err
+			}
+			if _, isKie := provider.(*Kie); isKie && len(request.OutputFormat) > 0 {
+				var target string
+				if common.Unmarshal(request.OutputFormat, &target) != nil {
+					return nil, unknown("交付格式无效")
+				}
+				for _, item := range result.Data {
+					data, decodeErr := base64.StdEncoding.DecodeString(item["b64_json"])
+					if decodeErr != nil {
+						return nil, unknown("图片数据无效")
+					}
+					decoded, format, decodeErr := image.Decode(bytes.NewReader(data))
+					if decodeErr != nil {
+						return nil, unknown("图片数据无效")
+					}
+					data, _, decodeErr = encodeKieOutput(data, decoded, format, target)
+					if decodeErr != nil {
+						return nil, unknown("图片编码失败")
+					}
+					item["b64_json"] = base64.StdEncoding.EncodeToString(data)
+				}
+			}
+			return result, nil
 		}
 		select {
 		case <-ctx.Done():

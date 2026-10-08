@@ -563,6 +563,24 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		return &requestBody, nil
 
 	default:
+		if c != nil && common.GetContextKeyBool(c, constant.ContextKeyTworkImageRoute) && (request.Model == "gpt-image-2.5-sunburst" || request.Model == "gpt-image-2.5-flare") {
+			if raw := request.Extra["resolution"]; len(raw) > 0 {
+				var resolution string
+				if common.Unmarshal(raw, &resolution) != nil || (resolution != "1k" && resolution != "2k" && resolution != "4k") {
+					return nil, errors.New("图片档位无效")
+				}
+				encoded, err := common.Marshal(request)
+				if err != nil {
+					return nil, err
+				}
+				var payload map[string]json.RawMessage
+				if err := common.Unmarshal(encoded, &payload); err != nil {
+					return nil, err
+				}
+				payload["resolution"] = raw
+				return payload, nil
+			}
+		}
 		return request, nil
 	}
 }

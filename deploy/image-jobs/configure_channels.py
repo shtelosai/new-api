@@ -23,9 +23,9 @@ def channel_specs(kie_base, apimart_base, internal_key, group):
         for provider, base, priority in (('kie', kie_base, 200), ('apimart', apimart_base, 100)):
             result.append({
                 'name': f'twork-{provider}-{family}-async', 'type': 1,
-                'key': internal_key, 'status': 1, 'base_url': base.rstrip('/'),
+                'key': internal_key, 'status': 1, 'base_url': base.rstrip('/') + '-' + family,
                 'models': f'twork-image-{family}-async', 'group': group,
-                'priority': priority, 'weight': 1, 'tag': 'image-async',
+                'priority': priority + (200 if family == 'sunburst' else 0), 'weight': 1, 'tag': 'image-async',
                 'setting': json.dumps({'twork_runtime': 'image_async',
                     'twork_image_provider': provider, 'twork_image_family': family}),
             })
