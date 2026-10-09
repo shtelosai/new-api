@@ -14,6 +14,9 @@ var tworkPiModelsJSON []byte
 //go:embed twork_pi_models_1_0_0.json
 var tworkPiModels100JSON []byte
 
+//go:embed twork_pi_models_1_1_0.json
+var tworkPiModels110JSON []byte
+
 type TworkPiChatCompatibility struct {
 	ZaiToolStream                               bool           `json:"zaiToolStream"`
 	SupportsStore                               bool           `json:"supportsStore"`
@@ -45,6 +48,7 @@ type tworkPiCompatibilityProfile struct {
 
 var tworkPiModels = loadTworkPiModels(tworkPiModelsJSON, "0.85.1")
 var tworkPiModels100 = loadTworkPiModels(tworkPiModels100JSON, "1.0.0")
+var tworkPiModels110 = loadTworkPiModels(tworkPiModels110JSON, "1.1.0")
 
 func loadTworkPiModels(data []byte, version string) map[string]tworkPiCompatibilityProfile {
 	var catalog struct {
@@ -61,10 +65,14 @@ func loadTworkPiModels(data []byte, version string) map[string]tworkPiCompatibil
 }
 
 func tworkPiProfilesForVersion(version string) map[string]tworkPiCompatibilityProfile {
-	if version == "1.0.0" {
+	switch version {
+	case "1.1.0":
+		return tworkPiModels110
+	case "1.0.0":
 		return tworkPiModels100
+	default:
+		return tworkPiModels
 	}
-	return tworkPiModels
 }
 
 func SupportsTworkPiCompatibility(profile, wire, version string) bool {

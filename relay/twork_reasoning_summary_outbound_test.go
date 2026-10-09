@@ -100,6 +100,7 @@ func TestTworkReasoningSummaryReachesResponsesUpstreamWithoutChangingFixedOrLega
 		wantHistory   []any
 	}{
 		{"model_pi_one", "1.0.0", true, newHistory},
+		{"model_pi_one_one", "1.1.0", true, newHistory},
 		{"fixed_passthrough", "1.0.0", false, nil},
 		{"model_legacy", "0.85.1", true, legacyHistory},
 	} {

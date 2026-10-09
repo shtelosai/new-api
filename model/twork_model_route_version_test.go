@@ -53,14 +53,14 @@ func TestTworkModelRouteVersionKeepsAuthorizationAndDisableBoundaries(t *testing
 	InitChannelCache()
 	refreshTokenModelChannelCache()
 
-	for _, version := range []string{"", "0.85.1", "1.0.0", "1.1.0"} {
+	for _, version := range []string{"", "0.85.1", "1.0.0", "1.1.0", "1.2.0"} {
 		t.Run(version, func(t *testing.T) {
 			policy := TworkRoutePolicy{ModelRoute: true, ExcludeAnthropic: true, WireAPI: "responses", PiCompatibilityVersion: version}
 			channel, err := GetTworkRoutedChannel(context.Background(), "default", name, tokenID, "/v1/responses", policy, nil, 2991)
 			require.NoError(t, err)
 			require.NotNil(t, channel)
 			expected := 2996
-			if version == "1.0.0" {
+			if version == "1.0.0" || version == "1.1.0" {
 				expected = 2994
 			}
 			assert.Equal(t, expected, channel.Id)
@@ -75,7 +75,7 @@ func TestTworkModelRouteVersionKeepsAuthorizationAndDisableBoundaries(t *testing
 	}
 	// 持久化撤权立即生效，不受新版兼容声明或旧授权缓存影响。
 	require.NoError(t, DB.Where("token_id = ?", tokenID).Delete(&TokenModelChannel{}).Error)
-	for _, version := range []string{"0.85.1", "1.0.0"} {
+	for _, version := range []string{"0.85.1", "1.0.0", "1.1.0"} {
 		channel, err := GetTworkRoutedChannel(context.Background(), "default", name, tokenID, "/v1/responses", TworkRoutePolicy{ModelRoute: true, WireAPI: "responses", PiCompatibilityVersion: version}, nil, 2994)
 		require.NoError(t, err)
 		assert.Nil(t, channel)

@@ -45,7 +45,7 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 					}
 					if item["type"] == "reasoning" {
 						// 新版保留可移植的明文摘要；渠道签名、密文及恢复状态仍不回放。
-						if version == "1.0.0" {
+						if version == "1.0.0" || version == "1.1.0" {
 							summary, _ := item["summary"].([]any)
 							for _, entry := range summary {
 								part, ok := entry.(map[string]any)

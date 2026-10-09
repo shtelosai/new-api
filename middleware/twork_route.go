@@ -71,8 +71,8 @@ func tworkRouteCapabilityVersion(request *http.Request) int {
 func parseTworkModelRoute(request *http.Request) (model.TworkRoutePolicy, error) {
 	policy := model.TworkRoutePolicy{PiCompatibilityVersion: "0.85.1"}
 	piVersions := request.Header.Values("X-Twork-Pi-Compatibility-Version")
-	if len(piVersions) == 1 && piVersions[0] == "1.0.0" {
-		policy.PiCompatibilityVersion = "1.0.0"
+	if len(piVersions) == 1 && (piVersions[0] == "1.0.0" || piVersions[0] == "1.1.0") {
+		policy.PiCompatibilityVersion = piVersions[0]
 	}
 	versions := request.Header.Values("X-Twork-Client-Version")
 	if len(versions) == 1 {
