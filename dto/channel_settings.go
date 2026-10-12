@@ -18,6 +18,7 @@ type ChannelSettings struct {
 
 	TworkRuntime           string `json:"twork_runtime,omitempty"`
 	TworkWireAPI           string `json:"twork_wire_api,omitempty"`
+	TworkOMPCompatibility  string `json:"twork_omp_compatibility,omitempty"`
 	TworkPiCompatibility   string `json:"twork_pi_compatibility,omitempty"`
 	TworkDisplayMode       string `json:"twork_display_mode,omitempty"`
 	ForceFormat            bool   `json:"force_format,omitempty"`

@@ -19,7 +19,17 @@ func buildTworkModelUpstreamRequest(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 	var converted any
 	var before []byte
-	if info.ChannelSetting.TworkWireAPI == "chat_completions" {
+	if c.Request.URL.Path == "/v1/messages" {
+		var request dto.ClaudeRequest
+		if err = common.Unmarshal(data, &request); err != nil {
+			return nil, err
+		}
+		before, err = common.Marshal(request)
+		if err != nil {
+			return nil, err
+		}
+		converted, err = adaptor.ConvertClaudeRequest(c, info, &request)
+	} else if c.Request.URL.Path == "/v1/chat/completions" {
 		var request dto.GeneralOpenAIRequest
 		if err = common.Unmarshal(data, &request); err != nil {
 			return nil, err
@@ -48,7 +58,7 @@ func buildTworkModelUpstreamRequest(c *gin.Context, info *relaycommon.RelayInfo,
 	if err != nil {
 		return nil, err
 	}
-	if info.ApiType == constant.APITypeOpenAI {
+	if info.ApiType == constant.APITypeOpenAI || info.ApiType == constant.APITypeAnthropic {
 		data, err = mergeTworkOpenAIConversion(data, before, convertedData)
 		if err != nil {
 			return nil, err

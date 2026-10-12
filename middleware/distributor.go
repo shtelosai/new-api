@@ -78,7 +78,7 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "模型级选路声明无效，不能指定固定渠道")
 			return
 		}
-		if policy.ExcludeAnthropic {
+		if policy.ExcludeAnthropic || policy.OMPVersion != "" {
 			common.SetContextKey(c, constant.ContextKeyTworkRoutePolicy, policy)
 		}
 		if routeErr != nil || (explicitRoute && ok) {
@@ -117,6 +117,7 @@ func Distribute() func(c *gin.Context) {
 		if policy.ModelRoute {
 			common.SetContextKey(c, constant.ContextKeyTworkRouteModel, routeModelName)
 			common.SetContextKey(c, constant.ContextKeyTworkPiCompatibilityVersion, policy.PiCompatibilityVersion)
+			common.SetContextKey(c, constant.ContextKeyTworkOMPVersion, policy.OMPVersion)
 		}
 		if !ok {
 			// Select a channel for the user
@@ -151,7 +152,7 @@ func Distribute() func(c *gin.Context) {
 			channel = employeeChannel
 			common.SetContextKey(c, constant.ContextKeyTworkExplicitChannelRoute, true)
 		} else if explicitRoute {
-			channel, err = model.GetAuthorizedTworkChannel(c.Request.Context(), c.GetInt(string(constant.ContextKeyTokenId)), routeModelName, routeID, modelRequest.Model)
+			channel, err = model.GetAuthorizedTworkChannel(c.Request.Context(), c.GetInt(string(constant.ContextKeyTokenId)), routeModelName, routeID, modelRequest.Model, policy.OMPVersion != "")
 			if err != nil {
 				status := http.StatusServiceUnavailable
 				message := i18n.T(c, i18n.MsgDatabaseError)

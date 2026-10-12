@@ -11,6 +11,7 @@ import (
 
 // TworkRoutePolicy 是单次请求约束，不改变渠道配置或旧客户端的授权语义。
 type TworkRoutePolicy struct {
+	OMPVersion             string
 	ModelRoute             bool
 	ExcludeAnthropic       bool
 	WireAPI                string
@@ -18,6 +19,9 @@ type TworkRoutePolicy struct {
 }
 
 func (p TworkRoutePolicy) BlocksModelChannel(channel *Channel, modelName string) bool {
+	if p.OMPVersion != "" {
+		return false
+	}
 	name := strings.ToLower(strings.TrimSpace(modelName))
 	name = name[strings.LastIndex(name, "/")+1:]
 	// 4.0 的别名同样按公开模型 ID 判断，不豁免 Auto 或摘要。
@@ -27,6 +31,11 @@ func (p TworkRoutePolicy) BlocksModelChannel(channel *Channel, modelName string)
 func (p TworkRoutePolicy) Allows(channel *Channel, modelName string) bool {
 	if p.BlocksModelChannel(channel, modelName) {
 		return false
+	}
+	if p.OMPVersion != "" {
+		wire, err := channel.TworkOMPWireAPI()
+		return err == nil && wire == p.WireAPI && channel.GetSetting().TworkDisplayMode != "submenu" &&
+			dto.SupportsTworkOMPCompatibility(channel.TworkOMPProfile(), wire, p.OMPVersion)
 	}
 	if !p.ModelRoute {
 		return channel.AllowsLegacyRuntime()

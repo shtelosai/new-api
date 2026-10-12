@@ -32,8 +32,21 @@ func (channel *Channel) TworkRuntime() (string, error) {
 	if displayPresent && displayMode != "default" && displayMode != "submenu" {
 		return "", errors.New("不支持的 twork_display_mode")
 	}
-	if displayMode == "submenu" && runtime != "pi" {
+	if displayMode == "submenu" && runtime != "pi" && runtime != "omp" {
 		return "", errors.New("二级菜单仅支持 Pi 渠道")
+	}
+	ompProfile, ompPresent, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_omp_compatibility")
+	if err != nil {
+		return "", err
+	}
+	if runtime == "omp" {
+		_, present, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_pi_compatibility")
+		if err != nil || present {
+			return "", errors.New("OMP 渠道不能保存 Pi 兼容标记")
+		}
+	}
+	if ompPresent && (runtime != "omp" || !dto.SupportsTworkOMPCompatibility(ompProfile, wire, dto.TworkOMPVersion)) {
+		return "", errors.New("OMP 适配配置无效")
 	}
 	var settings dto.ChannelSettings
 	if err := common.UnmarshalJsonStr(*channel.Setting, &settings); err != nil {
@@ -58,6 +71,11 @@ func (channel *Channel) TworkRuntime() (string, error) {
 			return "", err
 		}
 		return "image_async", nil
+	case "omp":
+		if !dto.SupportsTworkOMPCompatibility(ompProfile, wire, dto.TworkOMPVersion) {
+			return "", errors.New("OMP 渠道协议无效")
+		}
+		return "omp", nil
 	case "pi":
 		if wire != "responses" && wire != "chat_completions" {
 			return "", errors.New("Pi 渠道必须指定有效的 twork_wire_api")
@@ -77,7 +95,7 @@ func (channel *Channel) TworkWireAPI() (string, error) {
 	if runtime == "codex" {
 		return "responses", nil
 	}
-	if runtime != "pi" {
+	if runtime != "pi" && runtime != "omp" {
 		return "", nil
 	}
 	wire, _, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_wire_api")
@@ -108,7 +126,7 @@ func (channel *Channel) PreserveTworkSettings(existing *Channel) error {
 	if err := common.UnmarshalJsonStr(existingJSON, &stored); err != nil {
 		return err
 	}
-	for _, field := range []string{"twork_runtime", "twork_wire_api", "twork_pi_compatibility", "twork_display_mode", "twork_image_provider", "twork_image_family"} {
+	for _, field := range []string{"twork_runtime", "twork_wire_api", "twork_pi_compatibility", "twork_omp_compatibility", "twork_display_mode", "twork_image_provider", "twork_image_family"} {
 		if _, _, err := common.CanonicalJSONStringField([]byte(incomingJSON), field); err != nil {
 			return err
 		}
@@ -131,7 +149,7 @@ func (channel *Channel) PreserveTworkSettings(existing *Channel) error {
 var ErrTworkRouteDenied = errors.New("没有该模型渠道的访问权限，或渠道不可用")
 
 // GetAuthorizedTworkChannel 每次直接核验持久化授权，空缓存及管理员身份均不能放行。
-func GetAuthorizedTworkChannel(ctx context.Context, tokenID int, modelName string, channelID int, billingModelName string) (*Channel, error) {
+func GetAuthorizedTworkChannel(ctx context.Context, tokenID int, modelName string, channelID int, billingModelName string, omp ...bool) (*Channel, error) {
 	if tokenID <= 0 || modelName == "" || channelID <= 0 {
 		return nil, ErrTworkRouteDenied
 	}
@@ -146,7 +164,7 @@ func GetAuthorizedTworkChannel(ctx context.Context, tokenID int, modelName strin
 		}
 		return nil, err
 	}
-	if runtime, err := channel.TworkRuntime(); err != nil || (runtime != "codex" && runtime != "pi") || channel.Status != common.ChannelStatusEnabled {
+	if runtime, err := channel.TworkRuntime(); err != nil || (runtime != "codex" && runtime != "pi" && !(len(omp) > 0 && omp[0] && (runtime == "omp" || runtime == "legacy"))) || channel.Status != common.ChannelStatusEnabled {
 		return nil, ErrTworkRouteDenied
 	}
 	declared := false
@@ -212,4 +230,35 @@ func (channel *Channel) ImageJobProvider() (string, string, error) {
 		return "", "", errors.New("异步图片提供方或模型家族无效")
 	}
 	return provider, family, nil
+}
+
+// OMP 只依赖协议配置和旧渠道明确类型，模型名字不参与路由。
+func (channel *Channel) TworkOMPWireAPI() (string, error) {
+	runtime, err := channel.TworkRuntime()
+	if err != nil {
+		return "", err
+	}
+	if runtime == "legacy" {
+		switch channel.Type {
+		case 14:
+			return "anthropic-messages", nil
+		case 1:
+			return "chat-completions", nil
+		default:
+			return "", nil
+		}
+	}
+	wire, err := channel.TworkWireAPI()
+	if wire == "chat_completions" {
+		wire = "chat-completions"
+	}
+	return wire, err
+}
+
+func (channel *Channel) TworkOMPProfile() string {
+	settings := channel.GetSetting()
+	if settings.TworkRuntime == "omp" {
+		return settings.TworkOMPCompatibility
+	}
+	return settings.TworkPiCompatibility
 }

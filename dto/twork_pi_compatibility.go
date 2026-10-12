@@ -35,15 +35,17 @@ type TworkPiChatCompatibility struct {
 }
 
 type TworkPiModelCompatibility struct {
-	Compat           TworkPiChatCompatibility `json:"compat"`
-	ThinkingLevelMap map[string]any           `json:"thinkingLevelMap"`
-	ThinkingLevels   map[string]string        `json:"thinkingLevels"`
+	ThinkingParams   map[string]map[string]any `json:"thinkingParams,omitempty"`
+	Compat           TworkPiChatCompatibility  `json:"compat"`
+	ThinkingLevelMap map[string]any            `json:"thinkingLevelMap"`
+	ThinkingLevels   map[string]string         `json:"thinkingLevels"`
 }
 
 type tworkPiCompatibilityProfile struct {
-	Defaults TworkPiChatCompatibility             `json:"defaults"`
-	Wires    []string                             `json:"wires"`
-	Models   map[string]TworkPiModelCompatibility `json:"models"`
+	DefaultThinkingParams map[string]map[string]map[string]any `json:"defaultThinkingParams,omitempty"`
+	Defaults              TworkPiChatCompatibility             `json:"defaults"`
+	Wires                 []string                             `json:"wires"`
+	Models                map[string]TworkPiModelCompatibility `json:"models"`
 }
 
 var tworkPiModels = loadTworkPiModels(tworkPiModelsJSON, "0.85.1")

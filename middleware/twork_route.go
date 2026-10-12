@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 )
 
@@ -27,7 +28,7 @@ func parseTworkChannelRoute(request *http.Request) (int, bool, error) {
 	if err != nil {
 		return 0, true, invalid
 	}
-	if request.URL.Path != "/v1/responses" && request.URL.Path != "/v1/responses/compact" && request.URL.Path != "/v1/chat/completions" {
+	if request.URL.Path != "/v1/responses" && request.URL.Path != "/v1/responses/compact" && request.URL.Path != "/v1/chat/completions" && !(request.URL.Path == "/v1/messages" && request.Header.Get("X-Twork-Agent-Runtime") == "omp") {
 		return 0, true, invalid
 	}
 	versions := request.Header.Values("X-Twork-Client-Version")
@@ -55,10 +56,16 @@ func tworkRouteCapabilityVersion(request *http.Request) int {
 	version := 0
 	for _, capability := range strings.Split(strings.Join(request.Header.Values("X-Twork-Client-Capabilities"), ","), ",") {
 		switch strings.TrimSpace(capability) {
+		case "model-routes-v4":
+			return 4
 		case "model-routes-v3":
-			return 3
+			if version < 3 {
+				version = 3
+			}
 		case "model-routes-v2":
-			version = 2
+			if version < 2 {
+				version = 2
+			}
 		case "model-routes-v1":
 			if version < 1 {
 				version = 1
@@ -78,6 +85,9 @@ func parseTworkModelRoute(request *http.Request) (model.TworkRoutePolicy, error)
 	if len(versions) == 1 {
 		version := tworkVersionPattern.FindStringSubmatch(versions[0])
 		policy.ExcludeAnthropic = version != nil && version[4] == "" && (len(version[1]) > 1 || version[1] >= "4")
+	}
+	if request.Header.Get("X-Twork-Agent-Runtime") == "omp" || len(request.Header.Values("X-Twork-Omp-Version")) > 0 || tworkRouteCapabilityVersion(request) == 4 {
+		return parseTworkOMPRoute(request, policy.ExcludeAnthropic)
 	}
 	modes, present := request.Header[http.CanonicalHeaderKey("X-Twork-Route-Mode")]
 	if !present {
@@ -102,8 +112,14 @@ func parseTworkModelRoute(request *http.Request) (model.TworkRoutePolicy, error)
 
 // 配置与请求协议必须一致；v1 客户端不能借旧请求格式进入 Pi 渠道。
 func tworkChannelSupportsProtocol(request *http.Request, channel *model.Channel) bool {
+	if request.Header.Get("X-Twork-Agent-Runtime") == "omp" {
+		policy, err := parseTworkModelRoute(request)
+		wire, wireErr := channel.TworkOMPWireAPI()
+		return err == nil && wireErr == nil && policy.OMPVersion != "" && wire == policy.WireAPI &&
+			dto.SupportsTworkOMPCompatibility(channel.TworkOMPProfile(), wire, policy.OMPVersion)
+	}
 	runtime, err := channel.TworkRuntime()
-	if err != nil || (runtime == "pi" && tworkRouteCapabilityVersion(request) < 2) {
+	if err != nil || runtime == "omp" || (runtime == "pi" && tworkRouteCapabilityVersion(request) < 2) {
 		return false
 	}
 	wire, err := channel.TworkWireAPI()
@@ -118,4 +134,30 @@ func tworkChannelSupportsProtocol(request *http.Request, channel *model.Channel)
 	default:
 		return false
 	}
+}
+
+// OMP v4 同时绑定引擎、SDK 快照、协议及选路方式，任何不完整声明都拒绝。
+func parseTworkOMPRoute(request *http.Request, formal bool) (model.TworkRoutePolicy, error) {
+	invalid := errors.New("OMP 请求需要匹配的 v4 能力、SDK 版本、协议和唯一选路方式")
+	empty := model.TworkRoutePolicy{}
+	single := func(name, expected string) bool {
+		values := request.Header.Values(name)
+		return len(values) == 1 && values[0] == expected
+	}
+	wires := request.Header.Values("X-Twork-Wire-Api")
+	if !formal || len(request.Header.Values("X-Twork-Client-Capabilities")) != 1 || tworkRouteCapabilityVersion(request) != 4 || !single("X-Twork-Agent-Runtime", "omp") ||
+		!single("X-Twork-Omp-Version", dto.TworkOMPVersion) || len(wires) != 1 {
+		return empty, invalid
+	}
+	wire := wires[0]
+	paths := map[string]string{"anthropic-messages": "/v1/messages", "responses": "/v1/responses", "chat-completions": "/v1/chat/completions"}
+	if paths[wire] == "" || paths[wire] != request.URL.Path {
+		return empty, invalid
+	}
+	_, pinned := request.Header[http.CanonicalHeaderKey("X-Twork-Channel-Id")]
+	modes := request.Header.Values("X-Twork-Route-Mode")
+	if (pinned && len(modes) != 0) || (!pinned && !single("X-Twork-Route-Mode", "model")) {
+		return empty, invalid
+	}
+	return model.TworkRoutePolicy{OMPVersion: dto.TworkOMPVersion, ModelRoute: !pinned, WireAPI: wire}, nil
 }

@@ -29,7 +29,14 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 	}
 	body["model"] = info.UpstreamModelName
 	version := common.GetContextKeyString(c, constant.ContextKeyTworkPiCompatibilityVersion)
-	if info.ChannelSetting.TworkWireAPI == "chat_completions" {
+	ompVersion := common.GetContextKeyString(c, constant.ContextKeyTworkOMPVersion)
+	if ompVersion != "" {
+		version = "omp:" + ompVersion
+		if c.Request.URL.Path == "/v1/messages" {
+			return portableOMPAnthropicRequest(body)
+		}
+	}
+	if info.ChannelSetting.TworkWireAPI == "chat_completions" || info.ChannelSetting.TworkWireAPI == "chat-completions" || (ompVersion != "" && c.Request.URL.Path == "/v1/chat/completions") {
 		adaptTworkChatRequest(body, info, version)
 	} else {
 		if id, _ := body["previous_response_id"].(string); id != "" {
@@ -45,7 +52,7 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 					}
 					if item["type"] == "reasoning" {
 						// 新版保留可移植的明文摘要；渠道签名、密文及恢复状态仍不回放。
-						if version == "1.0.0" || version == "1.1.0" {
+						if version == "1.0.0" || version == "1.1.0" || version == "omp:"+dto.TworkOMPVersion {
 							summary, _ := item["summary"].([]any)
 							for _, entry := range summary {
 								part, ok := entry.(map[string]any)
@@ -77,7 +84,7 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 		} else {
 			body["store"] = false
 			if reasoning, ok := body["reasoning"].(map[string]any); ok {
-				native := dto.GetTworkPiModelCompatibility(info.ChannelSetting.TworkPiCompatibility, info.UpstreamModelName, version)
+				native := tworkModelCompatibility(info, version)
 				if effort, ok := reasoning["effort"].(string); ok {
 					_, mapped, _ := resolveTworkThinking(native, effort)
 					if mapped == nil {
@@ -92,12 +99,16 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 			}
 		}
 	}
+	if ompVersion != "" {
+		if err := applyOMPThinking(body, tworkModelCompatibility(info, version), c.GetHeader("X-Twork-Thinking-Level")); err != nil {
+			return nil, err
+		}
+	}
 	return common.Marshal(body)
 }
 
 func adaptTworkChatRequest(body map[string]any, info *RelayInfo, version string) {
-	profile := info.ChannelSetting.TworkPiCompatibility
-	native := dto.GetTworkPiModelCompatibility(profile, info.UpstreamModelName, version)
+	native := tworkModelCompatibility(info, version)
 	compat := native.Compat
 	if tools, ok := body["tools"].([]any); ok && len(tools) > 0 && compat.ZaiToolStream {
 		body["tool_stream"] = true
@@ -180,6 +191,9 @@ func adaptTworkChatRequest(body map[string]any, info *RelayInfo, version string)
 				}
 			}
 		}
+	}
+	if version == "omp:"+dto.TworkOMPVersion {
+		return
 	}
 	effort, present := body["reasoning_effort"].(string)
 	if !present {
@@ -272,4 +286,80 @@ func resolveTworkThinking(native dto.TworkPiModelCompatibility, effort string) (
 		}
 	}
 	return level, mapped, present
+}
+
+func tworkModelCompatibility(info *RelayInfo, version string) dto.TworkPiModelCompatibility {
+	if version == "omp:"+dto.TworkOMPVersion {
+		profile := info.ChannelSetting.TworkOMPCompatibility
+		if info.ChannelSetting.TworkRuntime != "omp" {
+			profile = info.ChannelSetting.TworkPiCompatibility
+		}
+		wire := info.ChannelSetting.TworkWireAPI
+		if wire == "chat_completions" || (wire == "" && info.ChannelType == 1) {
+			wire = "chat-completions"
+		}
+		return dto.GetTworkOMPModelCompatibility(profile, info.UpstreamModelName, wire)
+	}
+	return dto.GetTworkPiModelCompatibility(info.ChannelSetting.TworkPiCompatibility, info.UpstreamModelName, version)
+}
+
+// 模型级负载均衡不回放原渠道签名；工具配对和可见正文保持原序。
+func portableOMPAnthropicRequest(body map[string]any) ([]byte, error) {
+	messages, _ := body["messages"].([]any)
+	for _, value := range messages {
+		message, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := message["content"].([]any)
+		if !ok {
+			continue
+		}
+		filtered := make([]any, 0, len(content))
+		for _, value := range content {
+			part, ok := value.(map[string]any)
+			if !ok {
+				filtered = append(filtered, value)
+				continue
+			}
+			switch part["type"] {
+			case "redacted_thinking":
+				continue
+			case "thinking":
+				if text, ok := part["thinking"].(string); ok && text != "" {
+					filtered = append(filtered, map[string]any{"type": "text", "text": text})
+				}
+			default:
+				filtered = append(filtered, value)
+			}
+		}
+		message["content"] = filtered
+	}
+	return common.Marshal(body)
+}
+
+// 思考参数由锁定 OMP 的原生序列化器生成，网关只应用对应档位的数据快照。
+func applyOMPThinking(body map[string]any, native dto.TworkPiModelCompatibility, level string) error {
+	if level == "" {
+		return nil
+	}
+	params, known := native.ThinkingParams[level]
+	if !known && level != "unsupported" {
+		return errors.New("OMP 思考档位不受支持")
+	}
+	for _, key := range []string{"reasoning", "reasoning_effort", "thinking", "enable_thinking", "preserve_thinking"} {
+		delete(body, key)
+	}
+	if kwargs, ok := body["chat_template_kwargs"].(map[string]any); ok {
+		for _, key := range []string{"enable_thinking", "preserve_thinking", "reasoning_effort", "thinking"} {
+			delete(kwargs, key)
+		}
+		if len(kwargs) == 0 {
+			delete(body, "chat_template_kwargs")
+		}
+	}
+	for key, value := range params {
+		body[key] = value
+	}
+	return nil
 }
