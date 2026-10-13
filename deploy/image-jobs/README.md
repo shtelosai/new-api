@@ -73,3 +73,5 @@ go test ./model -run 'TworkRuntime|TworkChannel|LegacyRuntime|ImageJob' -count=1
 - 旧同步池优先 APIMart Sunburst、其次 Kie Sunburst，再用 Kie/APIMart Flare；价格仍为每张 0.30 元，等待上限保持原值。Kie Sunburst 改图实测可超过该上限，受理后超时不转投其他渠道。
 - `reconcile_sunburst.py` 默认只读预览；应用时备份现有渠道和价格，仅修改指定图片渠道。配置完成后还须按原图片规则同步新同步渠道授权及后端池名单。
 - 已有额度 guard 时必须单写切换，不能并行启动两个网关；`scripts/release-tcp-hold.py` 可在零在途切换时短暂等待新连接，就绪后原样透传。45 秒内未就绪必须恢复旧镜像，禁止强杀在途用户请求。
+- 等待桥使用 `asyncio.timeout`，要求 Python 3.11 以上；生产机明确使用已有的 `/usr/bin/python3.12`，不能使用默认 Python 3.10。切换前用同一解释器在目标服务器运行 `scripts/test_release_tcp_hold.py`。
+- Nginx 平滑重载后，等待桥应先保持 ready，持续透传旧网关，等待旧 worker 自然退出；确认 HTTP、TCP、异步任务和账务排空后才移除 ready，短暂等待新连接并替换网关。旧 worker 退出不能占用等待连接的 45 秒预算；恢复正式入口并确认桥连接及相关 worker 全部排空后，才停止等待桥。
