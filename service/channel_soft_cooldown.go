@@ -220,7 +220,7 @@ func AppendChannelSoftCooldownAdminInfo(c *gin.Context, adminInfo map[string]int
 	if !info.Applied && len(info.SkippedChannelIDs) == 0 && !info.CacheDegraded && !info.AffinityCleared {
 		return
 	}
-	streamCommitted := common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted) || TworkResponsesFailoverEnabled(c) && c.Writer.Written()
+	streamCommitted := common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted) || TworkResponsesStreamCommitted(c)
 	cacheBackend := info.CacheBackend
 	if cacheBackend == "" {
 		cacheBackend = channelSoftCooldownCacheBackend()

@@ -152,7 +152,7 @@ func recordChannelSoftFailoverTerminalOutcome(c *gin.Context, succeeded bool) {
 	outcome := service.SoftFailoverOutcomeExhausted
 	if succeeded {
 		outcome = service.SoftFailoverOutcomeSameRequestSuccess
-	} else if common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted) || service.TworkResponsesFailoverEnabled(c) && c.Writer.Written() {
+	} else if common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted) || service.TworkResponsesStreamCommitted(c) {
 		outcome = service.SoftFailoverOutcomeDeferredAfterCommit
 	}
 	service.RecordChannelSoftFailoverOutcome(c, outcome)
@@ -469,7 +469,8 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	if c != nil && c.Writer != nil && c.Writer.Written() &&
-		!(claudeStreamGateActive(c) && !common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted)) {
+		!(claudeStreamGateActive(c) && !common.GetContextKeyBool(c, constant.ContextKeyClaudeStreamCommitted)) &&
+		!(service.TworkResponsesFailoverEnabled(c) && !service.TworkResponsesStreamCommitted(c)) {
 		return false
 	}
 	if openaiErr == nil {

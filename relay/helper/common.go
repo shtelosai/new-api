@@ -6,8 +6,10 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -87,6 +89,10 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data string) error {
 	if requestContextDone(c) {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
+	}
+	// 正式事件写出后禁止重放；请求等待阶段的 PingData 不设置此标记。
+	if service.TworkResponsesFailoverEnabled(c) {
+		common.SetContextKey(c, constant.ContextKeyTworkResponsesStreamCommitted, true)
 	}
 
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})

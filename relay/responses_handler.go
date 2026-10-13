@@ -165,7 +165,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
 		// 已输出的失败流不再重试，保留原有的实际用量结算；BillingSession 防止随后重复退款。
-		if service.TworkResponsesFailoverEnabled(c) && c.Writer.Written() {
+		if service.TworkResponsesStreamCommitted(c) {
 			if partial, ok := usage.(*dto.Usage); ok && partial != nil && partial.TotalTokens > 0 {
 				info.LastError = newAPIError
 				service.PostTextConsumeQuota(c, info, partial, []string{"Responses 流中断，按已输出用量结算"})

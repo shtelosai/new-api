@@ -31,6 +31,11 @@ func TworkResponsesFailoverEnabled(c *gin.Context) bool {
 	return ok && policy.ModelRoute && policy.WireAPI == "responses"
 }
 
+// Responses 心跳只保持连接；实际业务事件写出后才禁止重试并结算失败流。
+func TworkResponsesStreamCommitted(c *gin.Context) bool {
+	return TworkResponsesFailoverEnabled(c) && common.GetContextKeyBool(c, constant.ContextKeyTworkResponsesStreamCommitted)
+}
+
 // IsRelaySoftFailure 保留 Claude 的分类；Responses 另外将上游连接及服务故障纳入冷却。
 func IsRelaySoftFailure(c *gin.Context, err *types.NewAPIError) bool {
 	if !TworkResponsesFailoverEnabled(c) {

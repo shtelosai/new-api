@@ -26,6 +26,7 @@ def main():
     binary = args.binary.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
     calls, failed = [], set()
+    heartbeat_release = threading.Event()
 
     class Upstream(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -49,7 +50,11 @@ def main():
             channel = int(self.path.split('/')[1])
             calls.append(channel)
             tag = body.get('input')
-            partial = tag == 'partial' and channel == 301
+            heartbeat = str(tag).startswith('heartbeat-') and channel == 301
+            if heartbeat:
+                # 发布制品必须先向客户端发送真实保活，才允许上游返回并发错误。
+                assert heartbeat_release.wait(timeout=8), '客户端未收到保活'
+            partial = tag in ('partial', 'heartbeat-text', 'heartbeat-tool') and channel == 301
             status = 503 if channel in failed and not partial else 200
             usage = {'input_tokens': 10, 'output_tokens': 5, 'total_tokens': 15}
             result = {'id': 'synthetic', 'object': 'response', 'status': 'completed', 'model': MODEL,
@@ -62,11 +67,16 @@ def main():
             if status == 200 and body.get('stream'):
                 content_type = 'text/event-stream'
                 terminal = 'response.completed'
-                if partial:
-                    result.update(status='failed', error={'code': 'server_error', 'message': 'synthetic failure'})
+                if partial or heartbeat:
+                    code = 'gateway_concurrency_limit' if heartbeat else 'server_error'
+                    result.update(status='failed', error={'code': code, 'message': 'Concurrency limit exceeded for user, please retry later' if heartbeat else 'synthetic failure'})
                     terminal = 'response.failed'
-                events = [{'type': 'response.output_text.delta', 'delta': 'partial' if partial else 'OK'},
-                          {'type': terminal, 'response': result}]
+                events = []
+                if not heartbeat or partial:
+                    events.append({'type': 'response.output_text.delta', 'delta': 'partial' if partial else 'OK'})
+                if tag == 'heartbeat-tool' and channel == 301:
+                    events = [{'type': 'response.output_item.added', 'item': {'type': 'function_call', 'id': 'fc_heartbeat', 'call_id': 'call_heartbeat', 'name': 'read_note', 'arguments': '{}'}}]
+                events.append({'type': terminal, 'response': result})
                 payload = ''.join('data: ' + json.dumps(event) + '\n\n' for event in events).encode()
             else:
                 payload = json.dumps(result).encode()
@@ -108,6 +118,7 @@ def main():
 
     def relay(session, tag='normal', stream=False, fixed=False):
         calls.clear()
+        heartbeat_release.clear()
         headers = {'Authorization': 'Bearer sk-syntheticresponses', 'Content-Type': 'application/json',
                    'X-Twork-Client-Version': '4.0.0', 'X-Twork-Client-Capabilities': 'model-routes-v3',
                    'X-Twork-Route-Mode': 'model', 'X-Twork-Agent-Runtime': 'pi', 'X-Twork-Wire-Api': 'responses'}
@@ -119,7 +130,12 @@ def main():
         connection.request('POST', '/v1/responses', json.dumps({'model': MODEL, 'input': tag, 'store': False,
                                                                'prompt_cache_key': session, 'stream': stream}), headers)
         response = connection.getresponse()
-        return response.status, response.read()
+        prefix = b''
+        if str(tag).startswith('heartbeat-'):
+            prefix = response.readline()
+            assert prefix == b': PING\n', (prefix, calls)
+            heartbeat_release.set()
+        return response.status, prefix + response.read()
 
     try:
         start()
@@ -140,6 +156,7 @@ def main():
                         'include_model_name': True, 'ttl_seconds': 3600, 'skip_retry_on_failure': True}]}
             options = {'RetryTimes': '2', 'channel_health_setting.soft_failure_cooldown_enabled': 'true',
                        'channel_health_setting.soft_failure_cooldown_seconds': '1', 'channel_health_setting.soft_failure_max_attempts': '3',
+                       'general_setting.ping_interval_enabled': 'true', 'general_setting.ping_interval_seconds': '1',
                        'channel_affinity_setting': json.dumps(affinity)}
             for key, value in affinity.items():
                 options['channel_affinity_setting.'+key] = json.dumps(value)
@@ -181,10 +198,29 @@ def main():
         assert all(row[1] > 0 and row[2:] == (10,5) for row in consumed), consumed
         with sqlite3.connect(dbpath) as db:
             assert db.execute('SELECT COUNT(*) FROM channel_model_disabled').fetchone()[0] == 0
+        heartbeat_cases = []
+        failed.clear()
+        for tag in ('heartbeat-only', 'heartbeat-text', 'heartbeat-tool'):
+            # 等待既有真实冷却窗口，确保每个场景都实际先请求首选渠道。
+            time.sleep(1.2)
+            status, body = relay(tag, tag, stream=True)
+            expected = [301, 302] if tag == 'heartbeat-only' else [301]
+            assert status == 200 and calls == expected, (tag, status, calls, body)
+            assert body.startswith(b': PING\n'), (tag, body)
+            if tag == 'heartbeat-only':
+                assert b'"delta": "OK"' in body and b'gateway_concurrency_limit' not in body, body
+            else:
+                assert b'gateway_concurrency_limit' in body and b'"delta": "OK"' not in body, body
+                assert (b'partial' if tag == 'heartbeat-text' else b'call_heartbeat') in body, body
+            heartbeat_cases.append({'case': tag, 'channels': list(calls), 'real_keepalive_received': True, 'status': status})
+        wait_until(lambda: len(logs()) == 10)
+        consumed = logs()
+        assert [row[0] for row in consumed] == [301,302,302,302,301,301,302,302,301,301], consumed
+        assert all(row[1] > 0 and row[2:] == (10,5) for row in consumed), consumed
         result = {'result':'PASS','version':version,'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
                   'synthetic_only':True,'priority_failover':True,'sticky_after_recovery':True,'cooldown':True,
                   'partial_stream_no_retry':True,'fixed_channel_no_retry':True,'no_permanent_disable':True,
-                  'consume_logs':consumed,'no_duplicate_billing':True}
+                  'consume_logs':consumed,'no_duplicate_billing':True,'heartbeat_cases':heartbeat_cases}
         (args.output/'result.json').write_text(json.dumps(result,indent=2))
         print(json.dumps(result))
     finally:

@@ -150,7 +150,10 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				sr.Stop(streamError)
 				return
 			}
-			if (streamResponse.Type == "response.created" || streamResponse.Type == "response.in_progress") && !c.Writer.Written() && pendingBytes+len(data) <= 64*1024 {
+			if streamResponse.Type == "response.output_text.delta" && streamResponse.Delta == "" {
+				return
+			}
+			if (streamResponse.Type == "response.created" || streamResponse.Type == "response.in_progress") && !service.TworkResponsesStreamCommitted(c) && pendingBytes+len(data) <= 64*1024 {
 				pending = append(pending, data)
 				pendingBytes += len(data)
 				return
