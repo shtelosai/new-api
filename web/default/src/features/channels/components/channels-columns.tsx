@@ -84,6 +84,8 @@ import {
   handleUpdateTagField,
   handleUpdateChannelBalance,
   isTagAggregateRow,
+  parseTworkChannelRoute,
+  TWORK_OMP_WIRE_LABELS,
   type TagRow,
 } from '../lib'
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
@@ -1264,6 +1266,66 @@ export function useChannelsColumns(
           )
         },
         size: 120,
+        enableSorting: false,
+      },
+
+      // Twork runtime column: OMP channels serve only new Twork clients
+      {
+        id: 'twork_runtime',
+        accessorFn: (channel) => parseTworkChannelRoute(channel.setting).runtime,
+        header: t('Twork Runtime'),
+        meta: { mobileHidden: true },
+        cell: ({ row }) => {
+          const channel = row.original
+          if (isTagAggregateRow(channel)) {
+            const children = channel.children ?? []
+            const allOMP =
+              children.length > 0 &&
+              children.every(
+                (child) =>
+                  parseTworkChannelRoute(child.setting).runtime === 'omp'
+              )
+            return allOMP ? (
+              <StatusBadge
+                label='OMP'
+                variant='teal'
+                size='sm'
+                copyable={false}
+                className='-ml-1.5'
+              />
+            ) : (
+              <span className='text-muted-foreground text-xs'>-</span>
+            )
+          }
+          const route = parseTworkChannelRoute(channel.setting)
+          if (route.runtime === 'omp') {
+            return (
+              <div className='flex min-w-0 items-center gap-1.5'>
+                <StatusBadge
+                  label='OMP'
+                  variant='teal'
+                  size='sm'
+                  copyable={false}
+                  className='-ml-1.5'
+                />
+                {route.wire && (
+                  <span className='text-muted-foreground truncate text-xs'>
+                    {TWORK_OMP_WIRE_LABELS[route.wire]}
+                  </span>
+                )}
+              </div>
+            )
+          }
+          if (route.runtime === 'managed') {
+            return (
+              <span className='text-muted-foreground text-xs'>
+                {route.managedRuntime}
+              </span>
+            )
+          }
+          return <span className='text-muted-foreground text-xs'>-</span>
+        },
+        size: 170,
         enableSorting: false,
       },
 

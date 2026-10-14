@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"gorm.io/gorm"
 )
@@ -102,12 +105,61 @@ func (channel *Channel) TworkWireAPI() (string, error) {
 	return wire, err
 }
 
+// IsTworkOMPChannel 用于后台列表区分新版渠道；「旧版」即所有非 OMP 渠道（含 Pi、Codex、异步生图）。
+func (channel *Channel) IsTworkOMPChannel() bool {
+	runtime, err := channel.TworkRuntime()
+	return err == nil && runtime == "omp"
+}
+
+// ApplyChannelTworkRuntimeFilter 按运行方式筛选后台列表；同时匹配网关写入的紧凑 JSON 与 CMS 写入的带空格 JSON。
+func ApplyChannelTworkRuntimeFilter(query *gorm.DB, runtimeFilter string) *gorm.DB {
+	compact, spaced := `%"twork_runtime":"omp"%`, `%"twork_runtime": "omp"%`
+	switch runtimeFilter {
+	case "omp":
+		return query.Where("(setting LIKE ? OR setting LIKE ?)", compact, spaced)
+	case "legacy":
+		return query.Where("(setting IS NULL OR (setting NOT LIKE ? AND setting NOT LIKE ?))", compact, spaced)
+	}
+	return query
+}
+
 func (channel *Channel) AllowsLegacyRuntime() bool {
 	runtime, err := channel.TworkRuntime()
 	return err == nil && runtime == "legacy"
 }
 
+// TworkOMPFormWires 是渠道表单可为 OMP 选择的协议：Anthropic 固定 Messages，OpenAI 二选一，其余类型不能设为 OMP。
+func TworkOMPFormWires(channelType int) []string {
+	switch channelType {
+	case constant.ChannelTypeAnthropic:
+		return []string{"anthropic-messages"}
+	case constant.ChannelTypeOpenAI:
+		return []string{"responses", "chat-completions"}
+	}
+	return nil
+}
+
+// ValidateTworkOMPFormWire 只校验渠道表单写入的 OMP 协议；CMS 既有配置仍按 TworkRuntime 校验。
+func (channel *Channel) ValidateTworkOMPFormWire() error {
+	if channel.Setting == nil || *channel.Setting == "" {
+		return nil
+	}
+	runtime, _, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_runtime")
+	if err != nil || runtime != "omp" {
+		return err
+	}
+	wire, _, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_wire_api")
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(TworkOMPFormWires(channel.Type), wire) {
+		return errors.New("该渠道类型不支持 OMP，或 OMP 协议与渠道类型不匹配")
+	}
+	return nil
+}
+
 // PreserveTworkSettings 保留 CMS 管理的路由标记，普通渠道表单不能覆盖其当前值。
+// 例外：当前为旧版或 OMP 的渠道，表单可在两者之间切换并选择 OMP 协议；Pi、Codex、异步生图仍只由 CMS 管理。
 func (channel *Channel) PreserveTworkSettings(existing *Channel) error {
 	if channel.Setting == nil {
 		return nil
@@ -126,6 +178,20 @@ func (channel *Channel) PreserveTworkSettings(existing *Channel) error {
 	if err := common.UnmarshalJsonStr(existingJSON, &stored); err != nil {
 		return err
 	}
+	formRuntime, formRuntimePresent, err := common.CanonicalJSONStringField([]byte(incomingJSON), "twork_runtime")
+	if err != nil {
+		return err
+	}
+	formWire, _, err := common.CanonicalJSONStringField([]byte(incomingJSON), "twork_wire_api")
+	if err != nil {
+		return err
+	}
+	storedRuntime, err := existing.TworkRuntime()
+	if err != nil {
+		return err
+	}
+	formManaged := formRuntimePresent && (formRuntime == "legacy" || formRuntime == "omp") &&
+		(storedRuntime == "legacy" || storedRuntime == "omp")
 	for _, field := range []string{"twork_runtime", "twork_wire_api", "twork_pi_compatibility", "twork_omp_compatibility", "twork_display_mode", "twork_image_provider", "twork_image_family"} {
 		if _, _, err := common.CanonicalJSONStringField([]byte(incomingJSON), field); err != nil {
 			return err
@@ -136,6 +202,31 @@ func (channel *Channel) PreserveTworkSettings(existing *Channel) error {
 		delete(incoming, field)
 		if value, present := stored[field]; present {
 			incoming[field] = value
+		}
+	}
+	if formManaged && formRuntime == "legacy" {
+		// 显式保留 legacy 标记，使事务内的二次合并保持幂等；OMP 专属的协议、适配和二级菜单一并清除。
+		for _, field := range []string{"twork_wire_api", "twork_omp_compatibility", "twork_display_mode"} {
+			delete(incoming, field)
+		}
+		incoming["twork_runtime"] = json.RawMessage(`"legacy"`)
+	}
+	if formManaged && formRuntime == "omp" {
+		channelType := channel.Type
+		if channelType == 0 {
+			channelType = existing.Type
+		}
+		if !slices.Contains(TworkOMPFormWires(channelType), formWire) {
+			return errors.New("该渠道类型不支持 OMP，或 OMP 协议与渠道类型不匹配")
+		}
+		incoming["twork_runtime"] = json.RawMessage(`"omp"`)
+		incoming["twork_wire_api"] = json.RawMessage(strconv.Quote(formWire))
+		// 由旧版切入时不继承任何展示或适配配置；换协议后已不支持的适配回到默认。
+		if storedRuntime != "omp" {
+			delete(incoming, "twork_display_mode")
+			delete(incoming, "twork_omp_compatibility")
+		} else if profile := existing.TworkOMPProfile(); profile != "" && !dto.SupportsTworkOMPCompatibility(profile, formWire, dto.TworkOMPVersion) {
+			delete(incoming, "twork_omp_compatibility")
 		}
 	}
 	encoded, err := common.Marshal(incoming)

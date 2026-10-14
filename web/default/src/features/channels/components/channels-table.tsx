@@ -132,6 +132,7 @@ export function ChannelsTable() {
       },
       { columnId: 'type', searchKey: 'type', type: 'array' },
       { columnId: 'group', searchKey: 'group', type: 'array' },
+      { columnId: 'twork_runtime', searchKey: 'runtime', type: 'array' },
       { columnId: 'model', searchKey: 'model', type: 'string' },
     ],
   })
@@ -161,6 +162,14 @@ export function ChannelsTable() {
   )
   const groupFilter =
     (columnFilters.find((f) => f.id === 'group')?.value as string[]) || []
+  const runtimeFilterValue = (
+    (columnFilters.find((f) => f.id === 'twork_runtime')?.value as string[]) ||
+    []
+  )[0]
+  const runtimeFilter =
+    runtimeFilterValue === 'omp' || runtimeFilterValue === 'legacy'
+      ? runtimeFilterValue
+      : undefined
   const {
     value: modelFilter,
     inputValue: modelFilterInput,
@@ -235,6 +244,7 @@ export function ChannelsTable() {
         typeFilter.length > 0 && !typeFilter.includes('all')
           ? Number(typeFilter[0])
           : undefined,
+      twork_runtime: runtimeFilter,
       tag_mode: enableTagMode,
       id_sort: idSort,
       ...sortParams,
@@ -258,6 +268,7 @@ export function ChannelsTable() {
             typeFilter.length > 0 && !typeFilter.includes('all')
               ? Number(typeFilter[0])
               : undefined,
+          twork_runtime: runtimeFilter,
           tag_mode: enableTagMode,
           id_sort: idSort,
           ...sortParams,
@@ -278,6 +289,7 @@ export function ChannelsTable() {
             typeFilter.length > 0 && !typeFilter.includes('all')
               ? Number(typeFilter[0])
               : undefined,
+          twork_runtime: runtimeFilter,
           tag_mode: enableTagMode,
           id_sort: idSort,
           ...sortParams,
@@ -456,6 +468,16 @@ export function ChannelsTable() {
             columnId: 'group',
             title: t('Group'),
             options: groupFilterOptions,
+            singleSelect: true,
+          },
+          {
+            columnId: 'twork_runtime',
+            title: t('Twork Runtime'),
+            options: [
+              { value: 'all', label: 'All Runtimes' },
+              { value: 'omp', label: 'New OMP' },
+              { value: 'legacy', label: 'Legacy' },
+            ],
             singleSelect: true,
           },
         ],

@@ -578,7 +578,7 @@ func (channel *Channel) Update() error {
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		if channel.Setting != nil {
 			var existing Channel
-			if err := lockForUpdate(tx).Select("id", "setting").First(&existing, channel.Id).Error; err != nil {
+			if err := lockForUpdate(tx).Select("id", "type", "setting").First(&existing, channel.Id).Error; err != nil {
 				return err
 			}
 			if err := channel.PreserveTworkSettings(&existing); err != nil {

@@ -281,6 +281,7 @@ export interface GetChannelsParams {
   type?: number
   group?: string
   id_sort?: boolean
+  twork_runtime?: 'omp' | 'legacy'
   tag_mode?: boolean
   sort_by?: ChannelSortBy
   sort_order?: ChannelSortOrder
@@ -293,6 +294,7 @@ export interface SearchChannelsParams {
   status?: string
   type?: number
   id_sort?: boolean
+  twork_runtime?: 'omp' | 'legacy'
   tag_mode?: boolean
   sort_by?: ChannelSortBy
   sort_order?: ChannelSortOrder

@@ -171,6 +171,20 @@ func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointTyp
 	if channel != nil && channel.Type == constant.ChannelTypeCodex {
 		return string(constant.EndpointTypeOpenAIResponse)
 	}
+	// OMP 渠道按选定协议测试，避免 Responses 渠道被默认的 Chat Completions 测错。
+	if channel == nil {
+		return normalized
+	}
+	if wire, err := channel.TworkOMPWireAPI(); err == nil {
+		switch wire {
+		case "responses":
+			return string(constant.EndpointTypeOpenAIResponse)
+		case "chat-completions":
+			return string(constant.EndpointTypeOpenAI)
+		case "anthropic-messages":
+			return string(constant.EndpointTypeAnthropic)
+		}
+	}
 	return normalized
 }
 

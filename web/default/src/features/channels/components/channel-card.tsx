@@ -24,7 +24,11 @@ import { GroupBadge } from '@/components/group-badge'
 import { cn } from '@/lib/utils'
 
 import { CHANNEL_STATUS } from '../constants'
-import { isTagAggregateRow, parseGroupsList } from '../lib'
+import {
+  isTagAggregateRow,
+  parseGroupsList,
+  parseTworkChannelRoute,
+} from '../lib'
 import type { Channel } from '../types'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
 import { useChannels } from './channels-provider'
@@ -69,6 +73,12 @@ function ChannelCardComponent({
 
   const selectCell = renderCell('select')
   const typeCell = renderCell('type')
+  // 卡片视图只给 OMP 渠道加标识，旧版渠道保持原样。
+  const runtimeCell =
+    !isTagRow &&
+    parseTworkChannelRoute(row.original.setting).runtime === 'omp'
+      ? renderCell('twork_runtime')
+      : null
   const nameCell = renderCell('name')
   const statusCell = renderCell('status')
   const actionsCell = renderCell('actions')
@@ -101,6 +111,9 @@ function ChannelCardComponent({
               <span className='shrink-0'>{selectCell}</span>
             )}
             <div className='min-w-0 overflow-hidden'>{typeCell}</div>
+            {runtimeCell && (
+              <div className='min-w-0 overflow-hidden'>{runtimeCell}</div>
+            )}
           </div>
           <div className='flex shrink-0 items-center gap-1.5'>
             {showStatusBadge && statusCell}

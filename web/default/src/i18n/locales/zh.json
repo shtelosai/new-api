@@ -5189,6 +5189,27 @@
     "Click again to confirm": "再次点击确认",
     "Clearing...": "解除中...",
     "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "定时全量测试会探测非手动禁用的渠道；仅被动恢复只对真实请求失败被禁用的模型探活，探活成功即自动恢复上线。无法探活的模型（如 TTS/ASR）会保持禁用，需手动解除。",
-    "How frequently the system probes disabled models for recovery": "系统对被禁用模型探活恢复的频率"
+    "How frequently the system probes disabled models for recovery": "系统对被禁用模型探活恢复的频率",
+    "Twork Runtime": "Twork 运行方式",
+    "All Runtimes": "全部运行方式",
+    "New OMP": "新版 OMP",
+    "Legacy": "旧版",
+    "Request Protocol": "请求协议",
+    "Detect": "检测",
+    "{{runtime}} (managed in Twork CMS)": "{{runtime}}（由 Twork CMS 管理）",
+    "This channel type does not support New OMP. Use the OpenAI-compatible type if needed.": "此渠道类型暂不支持新版 OMP，需要时可用 OpenAI 兼容方式接入。",
+    "New OMP channels serve only new Twork clients; old clients never use them.": "新版 OMP 渠道只给新版客户端使用，旧版客户端不会用到它。",
+    "After saving, old Twork clients will stop using this channel. Do not switch channels that old clients still rely on.": "保存后旧版客户端将不再使用此渠道。旧版仍在使用的渠道请不要切换。",
+    "{{protocol}} (fixed for this channel type)": "{{protocol}}（此类型固定）",
+    "Preferred when the upstream supports it": "优先使用；上游支持时效果更好",
+    "Widest compatibility; use when the upstream does not support Responses": "兼容面最广，上游不支持 Responses 时使用",
+    "Fixed for this channel type": "此类型固定",
+    "Detect sends a tiny request using the saved channel config and the test model (or the first model); it only checks basic connectivity.": "检测会用已保存的渠道配置和测试模型（没有则用第一个模型）发一个极小请求，只验证基本连通。",
+    "Save the channel first, then detect while editing.": "保存渠道后，可在编辑时检测。",
+    "Add at least one model before detecting.": "请先添加至少一个模型再检测。",
+    "Responses is available ({{model}}{{time}})": "Responses 可用（{{model}}{{time}}）",
+    "Responses is unavailable, Chat Completions works. Switching is up to you.": "Responses 不可用，Chat Completions 可用。不会自动切换，由你决定。",
+    "Use Chat Completions": "改用 Chat Completions",
+    "Both protocols failed ({{model}}): {{error}}": "两种协议都失败（{{model}}）：{{error}}"
   }
 }

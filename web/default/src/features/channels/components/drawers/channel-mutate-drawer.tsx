@@ -188,6 +188,7 @@ import {
   ChannelBasicSection,
   ChannelEditorLoadingState,
   ChannelModelsSection,
+  TworkRuntimeField,
 } from './sections'
 
 type ChannelMutateDrawerProps = {
@@ -2014,6 +2015,11 @@ export function ChannelMutateDrawer({
                             )}
                           />
                         </div>
+
+                        <TworkRuntimeField
+                          form={form}
+                          channelId={channelId ?? undefined}
+                        />
 
                         {!isEditing && (
                           <FormField

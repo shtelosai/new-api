@@ -31,6 +31,11 @@ import {
   stringifyAdvancedCustomConfig,
   validateAdvancedCustomConfig,
 } from './advanced-custom'
+import {
+  getTworkOMPFormWires,
+  parseTworkChannelRoute,
+  type TworkOMPWire,
+} from './twork-runtime'
 
 // ============================================================================
 // Form Validation Schema
@@ -192,6 +197,11 @@ export const channelFormSchema = z
     pass_through_body_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
+    // Twork runtime (stored in setting JSON); managed = Pi/Codex/async image, read-only here
+    twork_runtime: z.enum(['legacy', 'omp', 'managed']).optional(),
+    twork_runtime_initial: z.enum(['legacy', 'omp', 'managed']).optional(),
+    twork_managed_runtime: z.string().optional(),
+    twork_wire_api: z.string().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
@@ -333,6 +343,10 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   pass_through_body_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
+  twork_runtime: 'legacy',
+  twork_runtime_initial: 'legacy',
+  twork_managed_runtime: '',
+  twork_wire_api: '',
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
@@ -460,6 +474,7 @@ export function transformChannelToFormDefaults(
     tag: channel.tag || '',
     remark: channel.remark || '',
     setting: channel.setting || '',
+    ...tworkRouteFormValues(channel.setting),
     param_override: channel.param_override || '',
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
@@ -490,17 +505,42 @@ export function transformChannelToFormDefaults(
   }
 }
 
+function tworkRouteFormValues(setting: string | null | undefined) {
+  const route = parseTworkChannelRoute(setting)
+  return {
+    twork_runtime: route.runtime,
+    twork_runtime_initial: route.runtime,
+    twork_managed_runtime: route.runtime === 'managed' ? route.managedRuntime : '',
+    twork_wire_api: route.runtime === 'omp' ? route.wire : '',
+  }
+}
+
 /**
  * Build the setting JSON string from form extra settings
  */
 function buildSettingJSON(formData: ChannelFormValues): string {
-  const settingObj = {
+  const settingObj: Record<string, unknown> = {
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
     proxy: formData.proxy || '',
     pass_through_body_enabled: formData.pass_through_body_enabled || false,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
+  }
+  // 只有 OMP 或从 OMP 切回旧版时才写运行方式；其余情况不带该键，后端保留已存值（Pi 等仍由 CMS 管理）。
+  const wires = getTworkOMPFormWires(formData.type)
+  if (formData.twork_runtime === 'omp' && wires.length > 0) {
+    settingObj.twork_runtime = 'omp'
+    settingObj.twork_wire_api = wires.includes(
+      formData.twork_wire_api as TworkOMPWire
+    )
+      ? formData.twork_wire_api
+      : wires[0]
+  } else if (
+    formData.twork_runtime === 'legacy' &&
+    formData.twork_runtime_initial === 'omp'
+  ) {
+    settingObj.twork_runtime = 'legacy'
   }
   return JSON.stringify(settingObj)
 }

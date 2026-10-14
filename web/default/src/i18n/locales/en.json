@@ -5189,6 +5189,27 @@
     "Click again to confirm": "Click again to confirm",
     "Clearing...": "Clearing...",
     "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.",
-    "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery"
+    "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery",
+    "Twork Runtime": "Twork Runtime",
+    "All Runtimes": "All Runtimes",
+    "New OMP": "New OMP",
+    "Legacy": "Legacy",
+    "Request Protocol": "Request Protocol",
+    "Detect": "Detect",
+    "{{runtime}} (managed in Twork CMS)": "{{runtime}} (managed in Twork CMS)",
+    "This channel type does not support New OMP. Use the OpenAI-compatible type if needed.": "This channel type does not support New OMP. Use the OpenAI-compatible type if needed.",
+    "New OMP channels serve only new Twork clients; old clients never use them.": "New OMP channels serve only new Twork clients; old clients never use them.",
+    "After saving, old Twork clients will stop using this channel. Do not switch channels that old clients still rely on.": "After saving, old Twork clients will stop using this channel. Do not switch channels that old clients still rely on.",
+    "{{protocol}} (fixed for this channel type)": "{{protocol}} (fixed for this channel type)",
+    "Preferred when the upstream supports it": "Preferred when the upstream supports it",
+    "Widest compatibility; use when the upstream does not support Responses": "Widest compatibility; use when the upstream does not support Responses",
+    "Fixed for this channel type": "Fixed for this channel type",
+    "Detect sends a tiny request using the saved channel config and the test model (or the first model); it only checks basic connectivity.": "Detect sends a tiny request using the saved channel config and the test model (or the first model); it only checks basic connectivity.",
+    "Save the channel first, then detect while editing.": "Save the channel first, then detect while editing.",
+    "Add at least one model before detecting.": "Add at least one model before detecting.",
+    "Responses is available ({{model}}{{time}})": "Responses is available ({{model}}{{time}})",
+    "Responses is unavailable, Chat Completions works. Switching is up to you.": "Responses is unavailable, Chat Completions works. Switching is up to you.",
+    "Use Chat Completions": "Use Chat Completions",
+    "Both protocols failed ({{model}}): {{error}}": "Both protocols failed ({{model}}): {{error}}"
   }
 }

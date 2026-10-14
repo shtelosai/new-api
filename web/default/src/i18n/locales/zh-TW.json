@@ -5189,6 +5189,27 @@
     "Click again to confirm": "Click again to confirm",
     "Clearing...": "Clearing...",
     "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.": "Scheduled full test probes non-manually-disabled channels; passive recovery only probes models disabled by request failures and re-enables them on a successful probe. Models that cannot be probed (e.g. TTS/ASR) stay disabled until cleared manually.",
-    "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery"
+    "How frequently the system probes disabled models for recovery": "How frequently the system probes disabled models for recovery",
+    "Twork Runtime": "Twork 執行方式",
+    "All Runtimes": "全部執行方式",
+    "New OMP": "新版 OMP",
+    "Legacy": "舊版",
+    "Request Protocol": "請求協定",
+    "Detect": "檢測",
+    "{{runtime}} (managed in Twork CMS)": "{{runtime}}（由 Twork CMS 管理）",
+    "This channel type does not support New OMP. Use the OpenAI-compatible type if needed.": "此渠道類型暫不支援新版 OMP，需要時可用 OpenAI 相容方式接入。",
+    "New OMP channels serve only new Twork clients; old clients never use them.": "新版 OMP 渠道只給新版用戶端使用，舊版用戶端不會用到它。",
+    "After saving, old Twork clients will stop using this channel. Do not switch channels that old clients still rely on.": "儲存後舊版用戶端將不再使用此渠道。舊版仍在使用的渠道請不要切換。",
+    "{{protocol}} (fixed for this channel type)": "{{protocol}}（此類型固定）",
+    "Preferred when the upstream supports it": "優先使用；上游支援時效果更好",
+    "Widest compatibility; use when the upstream does not support Responses": "相容面最廣，上游不支援 Responses 時使用",
+    "Fixed for this channel type": "此類型固定",
+    "Detect sends a tiny request using the saved channel config and the test model (or the first model); it only checks basic connectivity.": "檢測會用已儲存的渠道設定和測試模型（沒有則用第一個模型）發一個極小請求，只驗證基本連通。",
+    "Save the channel first, then detect while editing.": "儲存渠道後，可在編輯時檢測。",
+    "Add at least one model before detecting.": "請先新增至少一個模型再檢測。",
+    "Responses is available ({{model}}{{time}})": "Responses 可用（{{model}}{{time}}）",
+    "Responses is unavailable, Chat Completions works. Switching is up to you.": "Responses 不可用，Chat Completions 可用。不會自動切換，由你決定。",
+    "Use Chat Completions": "改用 Chat Completions",
+    "Both protocols failed ({{model}}): {{error}}": "兩種協定都失敗（{{model}}）：{{error}}"
   }
 }
