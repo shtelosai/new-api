@@ -164,7 +164,10 @@ func GetAuthorizedTworkChannel(ctx context.Context, tokenID int, modelName strin
 		}
 		return nil, err
 	}
-	if runtime, err := channel.TworkRuntime(); err != nil || (runtime != "codex" && runtime != "pi" && !(len(omp) > 0 && omp[0] && (runtime == "omp" || runtime == "legacy"))) || channel.Status != common.ChannelStatusEnabled {
+	// OMP 与旧客户端渠道互不复用：OMP 只进 omp 渠道，旧显式路由只进 codex/pi 渠道。
+	isOMP := len(omp) > 0 && omp[0]
+	runtime, err := channel.TworkRuntime()
+	if err != nil || (isOMP && runtime != "omp") || (!isOMP && runtime != "codex" && runtime != "pi") || channel.Status != common.ChannelStatusEnabled {
 		return nil, ErrTworkRouteDenied
 	}
 	declared := false
@@ -232,21 +235,11 @@ func (channel *Channel) ImageJobProvider() (string, string, error) {
 	return provider, family, nil
 }
 
-// OMP 只依赖协议配置和旧渠道明确类型，模型名字不参与路由。
+// OMP 只使用 CMS 明确标记为 omp 的渠道；legacy、codex、pi 渠道保留给旧客户端，不参与 OMP 选路。
 func (channel *Channel) TworkOMPWireAPI() (string, error) {
 	runtime, err := channel.TworkRuntime()
-	if err != nil {
+	if err != nil || runtime != "omp" {
 		return "", err
-	}
-	if runtime == "legacy" {
-		switch channel.Type {
-		case 14:
-			return "anthropic-messages", nil
-		case 1:
-			return "chat-completions", nil
-		default:
-			return "", nil
-		}
 	}
 	wire, err := channel.TworkWireAPI()
 	if wire == "chat_completions" {
@@ -256,9 +249,5 @@ func (channel *Channel) TworkOMPWireAPI() (string, error) {
 }
 
 func (channel *Channel) TworkOMPProfile() string {
-	settings := channel.GetSetting()
-	if settings.TworkRuntime == "omp" {
-		return settings.TworkOMPCompatibility
-	}
-	return settings.TworkPiCompatibility
+	return channel.GetSetting().TworkOMPCompatibility
 }

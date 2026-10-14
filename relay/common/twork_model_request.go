@@ -290,15 +290,11 @@ func resolveTworkThinking(native dto.TworkPiModelCompatibility, effort string) (
 
 func tworkModelCompatibility(info *RelayInfo, version string) dto.TworkPiModelCompatibility {
 	if version == "omp:"+dto.TworkOMPVersion {
-		profile := info.ChannelSetting.TworkOMPCompatibility
-		if info.ChannelSetting.TworkRuntime != "omp" {
-			profile = info.ChannelSetting.TworkPiCompatibility
-		}
 		wire := info.ChannelSetting.TworkWireAPI
-		if wire == "chat_completions" || (wire == "" && info.ChannelType == 1) {
+		if wire == "chat_completions" {
 			wire = "chat-completions"
 		}
-		return dto.GetTworkOMPModelCompatibility(profile, info.UpstreamModelName, wire)
+		return dto.GetTworkOMPModelCompatibility(info.ChannelSetting.TworkOMPCompatibility, info.UpstreamModelName, wire)
 	}
 	return dto.GetTworkPiModelCompatibility(info.ChannelSetting.TworkPiCompatibility, info.UpstreamModelName, version)
 }

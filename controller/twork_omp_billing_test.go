@@ -20,6 +20,9 @@ func TestOMPFailedStreamKeepsPartialUsageAndSettlesOnlyOnce(t *testing.T) {
 		body := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"failed\"},\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"input_tokens_details\":{\"cached_tokens\":60}}}}\n\n"
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	}))
+	// OMP 只能使用明确标记的 omp 渠道。
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("models = ?", name).Update("setting", `{"twork_runtime":"omp","twork_wire_api":"responses","pass_through_body_enabled":true}`).Error)
+	model.InitChannelCache()
 	require.NoError(t, model.DB.AutoMigrate(&model.Log{}, &model.User{}))
 	common.LogConsumeEnabled = true
 	request := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"`+name+`","input":"hello","stream":true}`))
