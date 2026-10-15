@@ -52,7 +52,7 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 					}
 					if item["type"] == "reasoning" {
 						// 新版保留可移植的明文摘要；渠道签名、密文及恢复状态仍不回放。
-						if version == "1.0.0" || version == "1.1.0" || version == "omp:"+dto.TworkOMPVersion {
+						if version == "1.0.0" || version == "1.1.0" || dto.IsTworkOMPCompatibilityVersion(version) {
 							summary, _ := item["summary"].([]any)
 							for _, entry := range summary {
 								part, ok := entry.(map[string]any)
@@ -192,7 +192,7 @@ func adaptTworkChatRequest(body map[string]any, info *RelayInfo, version string)
 			}
 		}
 	}
-	if version == "omp:"+dto.TworkOMPVersion {
+	if dto.IsTworkOMPCompatibilityVersion(version) {
 		return
 	}
 	effort, present := body["reasoning_effort"].(string)
@@ -289,7 +289,7 @@ func resolveTworkThinking(native dto.TworkPiModelCompatibility, effort string) (
 }
 
 func tworkModelCompatibility(info *RelayInfo, version string) dto.TworkPiModelCompatibility {
-	if version == "omp:"+dto.TworkOMPVersion {
+	if dto.IsTworkOMPCompatibilityVersion(version) {
 		wire := info.ChannelSetting.TworkWireAPI
 		if wire == "chat_completions" {
 			wire = "chat-completions"

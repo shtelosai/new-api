@@ -123,6 +123,7 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - Pi 渠道必须同时配置 `twork_runtime="pi"` 与 `twork_wire_api="responses"|"chat_completions"`；两键均严格解析。legacy 不允许协议键；旧 codex 仅兼容 Responses。
 - Pi 显式请求须正式客户端 `>=4.0.0` 与 `model-routes-v2`；按实际渠道协议核验 `/v1/responses`（含 compact）或 `/v1/chat/completions`，不跨协议/渠道回退。v1 不得进入 Pi 渠道；旧 codex 在 v1/v2 均仅支持 Responses。
 - OMP 渠道为 `twork_runtime="omp"`，OMP 请求只进 OMP 渠道、旧请求不进 OMP 渠道。渠道表单只能在旧版与 OMP 间切换（Anthropic 固定 `anthropic-messages`，OpenAI 为 `responses`/`chat-completions`，其余类型不可设 OMP）；切回旧版写显式 `legacy` 并清除 OMP 协议、适配与二级菜单，保证事务内二次合并幂等。Pi、Codex、异步生图仍只由 CMS 修改，表单值被忽略。后台列表 `twork_runtime=omp|legacy` 筛选需同时匹配紧凑与带空格 JSON。
+- OMP 版本不锁死：`X-Twork-Omp-Version` 只要求单值且为 `x.y.z`，原样记录用于归因，不按版本拒绝请求或渠道；兼容判断只看 `dto/twork_omp_models.json` 当前快照，Twork 升级 OMP 前负责核对并用其同步脚本重新生成。
 
 
 - `channels.setting.twork_runtime` 缺省、空字符串或 `legacy` 保持旧选路；`codex` 仅供显式授权的 Responses 请求。标记重复、大小写/转义变体、坏 JSON、未知值和 null 必须拒绝，读取设置不得清空并保存损坏配置。

@@ -48,7 +48,7 @@ func (channel *Channel) TworkRuntime() (string, error) {
 			return "", errors.New("OMP 渠道不能保存 Pi 兼容标记")
 		}
 	}
-	if ompPresent && (runtime != "omp" || !dto.SupportsTworkOMPCompatibility(ompProfile, wire, dto.TworkOMPVersion)) {
+	if ompPresent && (runtime != "omp" || !dto.SupportsTworkOMPCompatibility(ompProfile, wire)) {
 		return "", errors.New("OMP 适配配置无效")
 	}
 	var settings dto.ChannelSettings
@@ -75,7 +75,7 @@ func (channel *Channel) TworkRuntime() (string, error) {
 		}
 		return "image_async", nil
 	case "omp":
-		if !dto.SupportsTworkOMPCompatibility(ompProfile, wire, dto.TworkOMPVersion) {
+		if !dto.SupportsTworkOMPCompatibility(ompProfile, wire) {
 			return "", errors.New("OMP 渠道协议无效")
 		}
 		return "omp", nil
@@ -225,7 +225,7 @@ func (channel *Channel) PreserveTworkSettings(existing *Channel) error {
 		if storedRuntime != "omp" {
 			delete(incoming, "twork_display_mode")
 			delete(incoming, "twork_omp_compatibility")
-		} else if profile := existing.TworkOMPProfile(); profile != "" && !dto.SupportsTworkOMPCompatibility(profile, formWire, dto.TworkOMPVersion) {
+		} else if profile := existing.TworkOMPProfile(); profile != "" && !dto.SupportsTworkOMPCompatibility(profile, formWire) {
 			delete(incoming, "twork_omp_compatibility")
 		}
 	}

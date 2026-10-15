@@ -116,7 +116,7 @@ func tworkChannelSupportsProtocol(request *http.Request, channel *model.Channel)
 		policy, err := parseTworkModelRoute(request)
 		wire, wireErr := channel.TworkOMPWireAPI()
 		return err == nil && wireErr == nil && policy.OMPVersion != "" && wire == policy.WireAPI &&
-			dto.SupportsTworkOMPCompatibility(channel.TworkOMPProfile(), wire, policy.OMPVersion)
+			dto.SupportsTworkOMPCompatibility(channel.TworkOMPProfile(), wire)
 	}
 	runtime, err := channel.TworkRuntime()
 	if err != nil || runtime == "omp" || (runtime == "pi" && tworkRouteCapabilityVersion(request) < 2) {
@@ -146,7 +146,7 @@ func parseTworkOMPRoute(request *http.Request, formal bool) (model.TworkRoutePol
 	}
 	wires := request.Header.Values("X-Twork-Wire-Api")
 	if !formal || len(request.Header.Values("X-Twork-Client-Capabilities")) != 1 || tworkRouteCapabilityVersion(request) != 4 || !single("X-Twork-Agent-Runtime", "omp") ||
-		!single("X-Twork-Omp-Version", dto.TworkOMPVersion) || len(wires) != 1 {
+		len(request.Header.Values("X-Twork-Omp-Version")) != 1 || !dto.ValidTworkOMPVersion(request.Header.Get("X-Twork-Omp-Version")) || len(wires) != 1 {
 		return empty, invalid
 	}
 	wire := wires[0]
@@ -159,5 +159,5 @@ func parseTworkOMPRoute(request *http.Request, formal bool) (model.TworkRoutePol
 	if (pinned && len(modes) != 0) || (!pinned && !single("X-Twork-Route-Mode", "model")) {
 		return empty, invalid
 	}
-	return model.TworkRoutePolicy{OMPVersion: dto.TworkOMPVersion, ModelRoute: !pinned, WireAPI: wire}, nil
+	return model.TworkRoutePolicy{OMPVersion: request.Header.Get("X-Twork-Omp-Version"), ModelRoute: !pinned, WireAPI: wire}, nil
 }

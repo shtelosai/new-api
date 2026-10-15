@@ -35,7 +35,7 @@ func (p TworkRoutePolicy) Allows(channel *Channel, modelName string) bool {
 	if p.OMPVersion != "" {
 		wire, err := channel.TworkOMPWireAPI()
 		return err == nil && wire == p.WireAPI && channel.GetSetting().TworkDisplayMode != "submenu" &&
-			dto.SupportsTworkOMPCompatibility(channel.TworkOMPProfile(), wire, p.OMPVersion)
+			dto.SupportsTworkOMPCompatibility(channel.TworkOMPProfile(), wire)
 	}
 	if !p.ModelRoute {
 		return channel.AllowsLegacyRuntime()
