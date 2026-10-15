@@ -10,6 +10,12 @@ const semiUiDir = path.resolve(
   path.dirname(require.resolve('@douyinfe/semi-ui')),
   '../..',
 )
+// date-fns-tz 1.x (pulled in by Semi) imports date-fns v2 internals, but the
+// workspace hoists date-fns v4 for the default frontend. Point date-fns-tz at
+// the date-fns v2 copy Semi itself depends on.
+const semiDateFnsDir = path.dirname(
+  require.resolve('date-fns/package.json', { paths: [semiUiDir] }),
+)
 
 export default defineConfig(({ envMode }) => {
   const env = loadEnv({ mode: envMode, prefixes: ['VITE_'] })
@@ -74,6 +80,12 @@ export default defineConfig(({ envMode }) => {
       rspack: {
         module: {
           rules: [
+            {
+              test: /[\\/]node_modules[\\/]date-fns-tz[\\/]/,
+              resolve: {
+                alias: { 'date-fns': semiDateFnsDir },
+              },
+            },
             {
               test: /src[\\/].*\.js$/,
               type: 'javascript/auto',
