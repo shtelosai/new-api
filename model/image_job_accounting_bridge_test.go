@@ -437,6 +437,69 @@ func TestImageJobAccountingPreparePrecedesExternalQuotaSynchronization(t *testin
 	assert.Equal(t, 750000, a.RemainQuota)
 }
 
+func TestImageJobAccountingSettledPrepareDoesNotQueueBehindInflightQuotaWrite(t *testing.T) {
+	a, _ := imageJobAccountingFixture(t)
+	ctx := context.Background()
+	require.NoError(t, PrepareImageJobAccounting(ctx, a.Id))
+	// 已移交 token 的额度写入持有读锁直写 DB；在取连接前卡住，模拟生产中等待行锁的慢写入。
+	entered, release := make(chan struct{}), make(chan struct{})
+	var enter, unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(release) }) })
+	callback := "test:inflight-settled-token-write"
+	require.NoError(t, DB.Callback().Update().Before("gorm:begin_transaction").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "tokens" {
+			enter.Do(func() { close(entered); <-release })
+		}
+	}))
+	t.Cleanup(func() { DB.Callback().Update().Remove(callback) })
+	written := make(chan error, 1)
+	go func() { written <- DecreaseTokenQuota(a.Id, a.Key, 100) }()
+	<-entered
+	// tbackend 每次额度同步都会 prepare；排队写锁会挡住后续全部读锁，整个网关随之停摆。
+	prepared := make(chan error, 1)
+	go func() { prepared <- PrepareImageJobAccounting(ctx, a.Id) }()
+	select {
+	case err := <-prepared:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("已移交 token 的额度同步排在在途额度写入之后")
+	}
+	authenticated := make(chan error, 1)
+	go func() {
+		_, err := GetTokenByKey(a.Key, false)
+		authenticated <- err
+	}()
+	select {
+	case err := <-authenticated:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("额度同步后新请求鉴权被挡住")
+	}
+	unblock.Do(func() { close(release) })
+	require.NoError(t, <-written)
+	require.NoError(t, DB.First(a, a.Id).Error)
+	assert.Equal(t, 999900, a.RemainQuota)
+}
+
+func TestImageJobAccountingSettledPrepareStillWaitsForSiblingTransfer(t *testing.T) {
+	a, b := imageJobAccountingFixture(t)
+	ctx := context.Background()
+	require.NoError(t, PrepareImageJobAccounting(ctx, a.Id))
+	callback := "test:sibling-transfer-rollback"
+	require.NoError(t, DB.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "image_job_accounting_transfers" {
+			tx.AddError(errors.New("移交存储故障"))
+		}
+	}))
+	t.Cleanup(func() { DB.Callback().Create().Remove(callback) })
+	// 同付款用户的另一 token 移交未确认时，已移交 token 也不能据旧余额重算。
+	require.Error(t, PrepareImageJobAccounting(ctx, b.Id))
+	assert.ErrorIs(t, PrepareImageJobAccounting(ctx, a.Id), errImageJobAccountingFrozen)
+	require.NoError(t, DB.Callback().Create().Remove(callback))
+	require.NoError(t, PrepareImageJobAccounting(ctx, b.Id))
+	require.NoError(t, PrepareImageJobAccounting(ctx, a.Id))
+}
+
 func TestImageJobAccountingRedisLateFillCannotRestoreReservedQuota(t *testing.T) {
 	if os.Getenv("NEWAPI_TEST_LOCAL_REDIS") != "1" {
 		t.Skip("设置 NEWAPI_TEST_LOCAL_REDIS=1 启动隔离 Redis，验证图片额度桥")

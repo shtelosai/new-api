@@ -168,9 +168,40 @@ func lockImageJobAccountingMutation(id int, mode func(int) (bool, error)) bool {
 	}
 }
 
+// 调用方持有读锁或写锁；故障标记和同用户其他 token 的未确认移交优先于已移交状态。
+func imageJobAccountingSettled(tokenID, userID int) (bool, error) {
+	if _, uncertain := imageJobAccountingIssues.Load(ImageJobAccountingGuard{Kind: "tokerr", SubjectID: tokenID}); uncertain {
+		return false, errImageJobAccountingUncertain
+	}
+	if _, uncertain := imageJobAccountingIssues.Load(ImageJobAccountingGuard{Kind: "usrerr", SubjectID: userID}); uncertain {
+		return false, errImageJobAccountingUncertain
+	}
+	if owner, exists := imageJobAccounting.frozen[userID]; exists && owner != tokenID {
+		return false, errImageJobAccountingFrozen
+	}
+	return imageJobAccounting.tokens[tokenID] && imageJobAccounting.users[userID], nil
+}
+
 // PrepareImageJobAccounting 在图片 reserve 事务前调用。旧请求已经预扣的增量先移交，
 // 之后尚未完成的旧请求按原差额规则直接更新 DB，既不重扣预扣额，也不改变旧价格。
 func PrepareImageJobAccounting(ctx context.Context, tokenID int) (err error) {
+	// 已移交 token 只需读锁确认：上游每次额度同步都会调用这里，若排队写锁，
+	// 一个卡在 DB 的额度写入就会挡住之后所有鉴权和计费读锁（2026-10-08 网关停摆）。
+	imageJobAccounting.RLock()
+	settledToken := imageJobAccounting.ready && imageJobAccounting.tokens[tokenID]
+	imageJobAccounting.RUnlock()
+	if settledToken {
+		var token Token
+		if err := DB.WithContext(ctx).Unscoped().Select("id", "user_id").First(&token, tokenID).Error; err != nil {
+			return err
+		}
+		imageJobAccounting.RLock()
+		settled, err := imageJobAccountingSettled(tokenID, token.UserId)
+		imageJobAccounting.RUnlock()
+		if settled || err != nil {
+			return err
+		}
+	}
 	imageJobAccounting.Lock()
 	defer imageJobAccounting.Unlock()
 	defer func() {
@@ -195,17 +226,8 @@ func PrepareImageJobAccounting(ctx context.Context, tokenID int) (err error) {
 	if err := DB.WithContext(ctx).Unscoped().First(&token, tokenID).Error; err != nil {
 		return err
 	}
-	if _, uncertain := imageJobAccountingIssues.Load(ImageJobAccountingGuard{Kind: "tokerr", SubjectID: tokenID}); uncertain {
-		return errImageJobAccountingUncertain
-	}
-	if _, uncertain := imageJobAccountingIssues.Load(ImageJobAccountingGuard{Kind: "usrerr", SubjectID: token.UserId}); uncertain {
-		return errImageJobAccountingUncertain
-	}
-	if owner, exists := imageJobAccounting.frozen[token.UserId]; exists && owner != tokenID {
-		return errImageJobAccountingFrozen
-	}
-	if imageJobAccounting.tokens[tokenID] && imageJobAccounting.users[token.UserId] {
-		return nil
+	if settled, err := imageJobAccountingSettled(tokenID, token.UserId); settled || err != nil {
+		return err
 	}
 	transfer := imageJobAccounting.pending[tokenID]
 	if transfer == nil {
