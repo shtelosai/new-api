@@ -305,7 +305,8 @@ func TestRelayChannelErrorsDoNotExpandAttemptBudgetWithoutSoftFailure(t *testing
 
 	assert.Equal(t, 0, upstreamAttempts)
 	assert.Equal(t, common.RetryTimes+1, usedChannels)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	// 渠道都失败后统一回友好的 503，最后一个渠道的原错误只进日志。
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
 
 func TestRelayNonSoftFailureKeepsGlobalRetryBudget(t *testing.T) {
@@ -322,7 +323,8 @@ func TestRelayNonSoftFailureKeepsGlobalRetryBudget(t *testing.T) {
 
 	assert.Equal(t, 4, attempts)
 	assert.Equal(t, 4, usedChannels)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	// 渠道都失败后统一回友好的 503，最后一个渠道的原错误只进日志。
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
 
 func TestRelayMixedFailuresUseBudgetForLatestFailure(t *testing.T) {
@@ -334,7 +336,7 @@ func TestRelayMixedFailuresUseBudgetForLatestFailure(t *testing.T) {
 
 		assert.Equal(t, 2, attempts)
 		assert.Equal(t, 2, usedChannels)
-		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	})
 
 	t.Run("channel error followed by soft failures can use expanded budget", func(t *testing.T) {

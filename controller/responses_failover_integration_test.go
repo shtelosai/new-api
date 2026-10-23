@@ -183,7 +183,9 @@ func TestResponsesExhaustionPreservesLastErrorAndThenSkipsAllCooling(t *testing.
 	}))
 	w := requestResponsesFailover(router, name, "exhausted", false)
 	assert.Equal(t, 503, w.Code)
-	assert.Contains(t, w.Body.String(), "failed upstream channel-9702")
+	// 全部失败后回统一友好文案，不透传最后一个渠道的原文。
+	assert.Contains(t, w.Body.String(), service.UpstreamUnavailableMessage)
+	assert.NotContains(t, w.Body.String(), "failed upstream")
 	assert.Len(t, hosts, 3)
 	hosts = nil
 	w = requestResponsesFailover(router, name, "exhausted", false)

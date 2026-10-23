@@ -12,6 +12,8 @@ var softModelHealthErrorCodes = map[string]struct{}{
 	"system_cpu_overloaded":    {},
 	"system_memory_overloaded": {},
 	"system_disk_overloaded":   {},
+	// 上游也是本网关时，它渠道都失败后统一回这个码，属于临时不可用。
+	"upstream_unavailable": {},
 }
 
 var softModelHealthErrorTypes = map[string]struct{}{

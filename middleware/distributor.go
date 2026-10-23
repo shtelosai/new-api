@@ -290,11 +290,11 @@ func Distribute() func(c *gin.Context) {
 						if errors.As(err, &coolingErr) {
 							c.Header("Retry-After", strconv.Itoa(coolingErr.RetryAfterSeconds()))
 						}
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
+						abortWithUpstreamUnavailable(c, message)
 						return
 					}
 					if channel == nil {
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
+						abortWithUpstreamUnavailable(c, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}))
 						return
 					}
 				}
@@ -303,7 +303,7 @@ func Distribute() func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		if (imageRoute || explicitRoute || policy.ModelRoute || employeeRoute) && setupErr != nil {
-			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, setupErr.Error())
+			abortWithUpstreamUnavailable(c, setupErr.Error())
 			return
 		}
 		c.Next()

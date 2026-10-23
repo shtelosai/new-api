@@ -449,7 +449,8 @@ func TestDistributeAllClaudeChannelsCoolingReturnsRetryAfter(t *testing.T) {
 		} `json:"error"`
 	}
 	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &payload))
-	assert.Equal(t, string(types.ErrorCodeModelNotFound), payload.Error.Code)
+	assert.Equal(t, string(types.ErrorCodeUpstreamUnavailable), payload.Error.Code)
+	assert.Contains(t, rec.Body.String(), service.UpstreamUnavailableMessage)
 }
 
 func TestDistributeClaudeWithoutCandidatesDoesNotSetRetryAfter(t *testing.T) {

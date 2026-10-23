@@ -186,9 +186,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			if service.IsUpstreamQuotaExhaustedError(newAPIError) {
-				// 上游渠道欠费不是用户额度问题；原文已进日志，回给用户的不带额度字样，避免客户端误报积分不足。
-				newAPIError = types.NewErrorWithStatusCode(errors.New("该模型的上游服务暂时不可用，请稍后重试或更换其他模型"), types.ErrorCodeUpstreamUnavailable, http.StatusServiceUnavailable)
+			// 渠道都失败（含上游欠费）不是用户的问题；原文已进日志，回给用户统一的友好文案，不透传上游报错。
+			// 流已开始写出时保留原错误码：客户端靠流内错误码判断断流能否续写（如 upstream_stream_error），欠费照旧改写。
+			if service.IsUpstreamQuotaExhaustedError(newAPIError) || (!c.Writer.Written() && service.IsChannelSideFailure(newAPIError)) {
+				newAPIError = service.NewUpstreamUnavailableError()
 			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			if relayFormat == types.RelayFormatOpenAIRealtime {

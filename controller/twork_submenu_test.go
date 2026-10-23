@@ -57,7 +57,9 @@ func TestSubmenuRelayFailureNeverFallsBackToSameModelChannel(t *testing.T) {
 	router.ServeHTTP(recorder, req)
 	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
 	assert.Len(t, hosts, 1)
-	assert.Contains(t, recorder.Body.String(), "selected upstream failed")
+	// 固定渠道失败同样不透传上游原文。
+	assert.Contains(t, recorder.Body.String(), service.UpstreamUnavailableMessage)
+	assert.NotContains(t, recorder.Body.String(), "selected upstream failed")
 }
 
 func TestUpdateChannelPreservesCMSSubmenuWhenOldFormChangesProxy(t *testing.T) {

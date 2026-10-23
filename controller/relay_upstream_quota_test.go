@@ -48,7 +48,9 @@ func TestShouldRetryUpstreamQuotaExhaustedOutsideRetryStatusRanges(t *testing.T)
 	}
 }
 
-func TestRelayRewritesUpstreamQuotaExhaustedErrorForClient(t *testing.T) {
+// relayAgainstUpstream 让唯一渠道固定回给定的上游错误，返回客户端最终收到的响应。
+func relayAgainstUpstream(t *testing.T, status int, upstreamBody string, format types.RelayFormat) *httptest.ResponseRecorder {
+	t.Helper()
 	if service.GetHttpClient() == nil {
 		service.InitHttpClient()
 	}
@@ -57,9 +59,9 @@ func TestRelayRewritesUpstreamQuotaExhaustedErrorForClient(t *testing.T) {
 	originalTransport := httpClient.Transport
 	httpClient.Transport = relayRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
-			StatusCode: http.StatusTooManyRequests,
+			StatusCode: status,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(moonshotSuspendedBody)),
+			Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 			Request:    req,
 		}, nil
 	})
@@ -91,55 +93,65 @@ func TestRelayRewritesUpstreamQuotaExhaustedErrorForClient(t *testing.T) {
 		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(string(originalModelRatios)))
 	})
 
+	path, body := "/v1/chat/completions", `{"model":"upstream-quota-test","messages":[{"role":"user","content":"hello"}]}`
+	if format == types.RelayFormatClaude {
+		path, body = "/v1/messages", `{"model":"upstream-quota-test","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`
+	}
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "upstream-quota-test")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{AcceptUnsetRatioModel: true})
+	common.SetContextKey(c, constant.ContextKeyChannelId, 9601)
+	common.SetContextKey(c, constant.ContextKeyChannelName, "upstream-quota-test")
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, "sk-test")
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://upstream.test")
+	common.SetContextKey(c, constant.ContextKeyChannelRatio, float64(0))
+
+	Relay(c, format)
+	return w
+}
+
+func TestRelayRewritesChannelFailureForClient(t *testing.T) {
 	tests := []struct {
-		name   string
-		path   string
-		body   string
-		format types.RelayFormat
+		name     string
+		status   int
+		upstream string
+		leaked   []string
 	}{
-		{
-			name:   "OpenAI 格式",
-			path:   "/v1/chat/completions",
-			body:   `{"model":"upstream-quota-test","messages":[{"role":"user","content":"hello"}]}`,
-			format: types.RelayFormatOpenAI,
-		},
-		{
-			name:   "Claude 格式",
-			path:   "/v1/messages",
-			body:   `{"model":"upstream-quota-test","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`,
-			format: types.RelayFormatClaude,
-		},
+		{name: "上游欠费", status: http.StatusTooManyRequests, upstream: moonshotSuspendedBody, leaked: []string{"quota", "insufficient", "balance", "余额", "额度", "suspended"}},
+		{name: "上游 502", status: http.StatusBadGateway, upstream: `{"error":{"message":"The upstream service could not complete the request.","type":"upstream_error"}}`, leaked: []string{"could not complete"}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gin.SetMode(gin.TestMode)
-			w := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(w)
-			c.Request = httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
-			c.Request.Header.Set("Content-Type", "application/json")
-			common.SetContextKey(c, constant.ContextKeyOriginalModel, "upstream-quota-test")
-			common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
-			common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
-			common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{AcceptUnsetRatioModel: true})
-			common.SetContextKey(c, constant.ContextKeyChannelId, 9601)
-			common.SetContextKey(c, constant.ContextKeyChannelName, "upstream-quota-test")
-			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
-			common.SetContextKey(c, constant.ContextKeyChannelKey, "sk-test")
-			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://upstream.test")
-			common.SetContextKey(c, constant.ContextKeyChannelRatio, float64(0))
+		for _, format := range []types.RelayFormat{types.RelayFormatOpenAI, types.RelayFormatClaude} {
+			t.Run(tt.name+"/"+string(format), func(t *testing.T) {
+				w := relayAgainstUpstream(t, tt.status, tt.upstream, format)
 
-			Relay(c, tt.format)
-
-			require.Equal(t, http.StatusServiceUnavailable, w.Code)
-			body := strings.ToLower(w.Body.String())
-			// Claude 错误体只有 type/message，错误码只在 OpenAI 格式里体现。
-			if tt.format == types.RelayFormatOpenAI {
-				assert.Contains(t, body, "upstream_unavailable")
-			}
-			assert.Contains(t, w.Body.String(), "上游服务暂时不可用")
-			for _, leaked := range []string{"quota", "insufficient", "balance", "余额", "额度"} {
-				assert.NotContains(t, body, leaked)
-			}
-		})
+				require.Equal(t, http.StatusServiceUnavailable, w.Code)
+				// Claude 错误体只有 type/message，错误码只在 OpenAI 格式里体现。
+				if format == types.RelayFormatOpenAI {
+					assert.Contains(t, w.Body.String(), "upstream_unavailable")
+				}
+				assert.Contains(t, w.Body.String(), service.UpstreamUnavailableMessage)
+				body := strings.ToLower(w.Body.String())
+				for _, leaked := range tt.leaked {
+					assert.NotContains(t, body, leaked)
+				}
+			})
+		}
 	}
+}
+
+func TestRelayKeepsRequestSpecificUpstreamError(t *testing.T) {
+	const contextTooLong = `{"error":{"message":"prompt is too long: 250000 tokens > 200000 maximum","type":"invalid_request_error"}}`
+	w := relayAgainstUpstream(t, http.StatusBadRequest, contextTooLong, types.RelayFormatOpenAI)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "prompt is too long")
+	assert.NotContains(t, w.Body.String(), service.UpstreamUnavailableMessage)
 }
