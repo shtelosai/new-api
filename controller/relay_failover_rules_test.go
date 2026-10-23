@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -544,4 +546,30 @@ func TestRelayClaudeClientMidStreamUsageDoesNotEndEarly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRelayUpstreamFinishedOnlyWhenUpstreamEndedItself(t *testing.T) {
+	newContext := func(clientGone bool) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx, cancel := context.WithCancel(context.Background())
+		if clientGone {
+			cancel()
+		} else {
+			t.Cleanup(cancel)
+		}
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+		return c
+	}
+	stream := func(reason relaycommon.StreamEndReason) *relaycommon.RelayInfo {
+		status := relaycommon.NewStreamStatus()
+		status.SetEndReason(reason, nil)
+		return &relaycommon.RelayInfo{IsStream: true, StreamStatus: status}
+	}
+	assert.True(t, relayUpstreamFinished(newContext(false), stream(relaycommon.StreamEndReasonClientGone)), "客户端还在：沿用原成功判断")
+	assert.True(t, relayUpstreamFinished(newContext(true), &relaycommon.RelayInfo{}), "非流式返回成功即已完整读完上游")
+	assert.True(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonDone)), "上游发完 [DONE] 后客户端断开")
+	assert.True(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonEOF)), "上游正常关闭连接后客户端断开")
+	assert.False(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonClientGone)), "客户端中途放弃：上游未必正常，不算成功")
+	assert.False(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonTimeout)))
+	assert.False(t, relayUpstreamFinished(newContext(true), &relaycommon.RelayInfo{IsStream: true}))
 }

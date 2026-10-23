@@ -282,3 +282,52 @@ func TestResponsesProbeRecoversWhenClientDisconnectsAfterEnd(t *testing.T) {
 	// 试探成功后应立即恢复原优先级；没确认的话试探名额还占着，新会话会被挤到备用渠道。
 	assert.Equal(t, []string{"channel-9700.test"}, send("probe-c", false), "试探成功后新会话回到最高优先级")
 }
+
+// 客户端收到结束事件就断开：模拟桌面端读到 response.completed 立即关闭连接。
+type leaveAfterCompleted struct {
+	*httptest.ResponseRecorder
+	clientGone context.CancelFunc
+}
+
+func (w leaveAfterCompleted) Write(p []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(p)
+	if strings.Contains(string(p), "response.completed") {
+		w.clientGone()
+	}
+	return n, err
+}
+
+func TestResponsesStreamClientDisconnectAfterEndKeepsRules(t *testing.T) {
+	var hosts []string
+	broken := true
+	router, name, _ := setupResponsesFailoverTest(t, relayRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		hosts = append(hosts, req.URL.Host)
+		if req.URL.Host == "channel-9700.test" && broken {
+			return &http.Response{StatusCode: 503, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"upstream service error"}}`)), Request: req}, nil
+		}
+		body := `data: {"type":"response.output_text.delta","delta":"好"}` + "\n\n" + `data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	}))
+	operation_setting.GetChannelHealthSetting().SoftFailureCooldownSeconds = 1
+	send := func(session string) []string {
+		hosts = nil
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"hello","store":false,"prompt_cache_key":%q,"stream":true}`, name, session))).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		for key, value := range map[string]string{"X-Twork-Client-Version": "4.0.0", "X-Twork-Client-Capabilities": "model-routes-v3", "X-Twork-Route-Mode": "model", "X-Twork-Agent-Runtime": "pi", "X-Twork-Wire-Api": "responses"} {
+			req.Header.Set(key, value)
+		}
+		w := leaveAfterCompleted{ResponseRecorder: httptest.NewRecorder(), clientGone: cancel}
+		router.ServeHTTP(w, req)
+		require.Contains(t, w.Body.String(), "response.completed", "%d %v %s", w.Code, hosts, w.Body.String())
+		require.Error(t, ctx.Err(), "客户端在收到结束事件后已断开")
+		return hosts
+	}
+	require.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, send("stay-on-b"))
+	broken = false
+	time.Sleep(1100 * time.Millisecond)
+	assert.Equal(t, []string{"channel-9700.test"}, send("probe-stream"), "冷却到期放一个请求试探")
+	assert.Equal(t, []string{"channel-9700.test"}, send("new-stream"), "试探成功后新会话回到最高优先级")
+	assert.Equal(t, []string{"channel-9701.test"}, send("stay-on-b"), "换渠道成功后会话粘到新渠道，读完即断开也要记上")
+}

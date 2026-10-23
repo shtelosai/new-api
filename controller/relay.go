@@ -386,12 +386,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					service.RecordAffinityClearedForLog(c)
 				}
 			}
-			// 上游已正常完成就确认恢复：客户端读到结尾即断开很常见（桌面端就是），不能因此让试探一直不算成功。
-			if useSoftFailureCooldown && !failedAfterCommit {
-				service.CompleteResponsesRecovery(c, channel.Id, relayInfo.OriginModelName)
-			}
-			if !relayRequestContextDone(c) && !failedAfterCommit {
+			if !failedAfterCommit && relayUpstreamFinished(c, relayInfo) {
 				common.SetContextKey(c, constant.ContextKeyTworkRelaySucceeded, true)
+				if useSoftFailureCooldown {
+					service.CompleteResponsesRecovery(c, channel.Id, relayInfo.OriginModelName)
+				}
 			}
 			if relayFormat == types.RelayFormatClaude && !relayRequestContextDone(c) && !failedAfterCommit {
 				common.SetContextKey(c, constant.ContextKeyClaudeRelaySucceeded, true)
@@ -528,6 +527,23 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 
 func relayRequestContextDone(c *gin.Context) bool {
 	return c != nil && c.Request != nil && c.Request.Context().Err() != nil
+}
+
+// relayUpstreamFinished 这次上游是否真的完整回完：客户端读到结尾就断开很常见（桌面端就是），
+// 不能因此不确认试探成功、不记新渠道的会话粘性；但客户端中途放弃时上游未必正常，不能据此算成功。
+func relayUpstreamFinished(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	if !relayRequestContextDone(c) || !info.IsStream {
+		// 非流式返回 nil 时已完整读完上游响应；客户端中途走了会取消上游读取并报错。
+		return true
+	}
+	if info.StreamStatus == nil {
+		return false
+	}
+	switch info.StreamStatus.EndReason {
+	case relaycommon.StreamEndReasonDone, relaycommon.StreamEndReasonEOF:
+		return true
+	}
+	return false
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
