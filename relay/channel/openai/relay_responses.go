@@ -74,6 +74,10 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	return &usage, nil
 }
 
+// response.created / in_progress 会回显 instructions 与 tools，大小与请求体同量级；
+// 上限只防异常上游，不能低于真实客户端的请求体（2026-10-23 曾设 64 KiB，Codex 类请求全部被判失败）。
+const responsesStartBufferLimit = 8 << 20
+
 func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		logger.LogError(c, "invalid response or response body")
@@ -153,17 +157,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			if streamResponse.Type == "response.output_text.delta" && streamResponse.Delta == "" {
 				return
 			}
-			if !service.TworkResponsesStreamCommitted(c) && !terminal && !helper.ResponseChunkHasSemanticOutput(streamResponse, data) {
-				// 不能因缓冲耗尽把开始事件当作已输出；终止本次尝试后仍可兜底。
-				if pendingBytes+len(data) > 64*1024 {
-					streamError = types.NewOpenAIError(fmt.Errorf("上游 Responses 开始事件超过缓冲上限"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
-					sr.Stop(streamError)
-					return
-				}
+			if !service.TworkResponsesStreamCommitted(c) && !terminal && !helper.ResponseChunkHasSemanticOutput(streamResponse, data) &&
+				pendingBytes+len(data) <= responsesStartBufferLimit {
 				pending = append(pending, data)
 				pendingBytes += len(data)
 				return
 			}
+			// 超出上限时按原样放行：这次请求失去兜底，但健康渠道的正常回复不能被判成失败。
 			for _, buffered := range pending {
 				var event dto.ResponsesStreamResponse
 				_ = common.UnmarshalJsonStr(buffered, &event)

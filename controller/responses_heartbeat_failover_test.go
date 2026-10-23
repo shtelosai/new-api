@@ -31,6 +31,7 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 		name        string
 		prefix      string
 		allFail     bool
+		healthy     bool
 		wantCalls   int
 		wantSuccess bool
 	}{
@@ -41,6 +42,8 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 		{name: "空思考骨架仍允许切换", prefix: `data: {"type":"response.output_item.added","item":{"id":"discard-reasoning","type":"reasoning","summary":[]}}` + "\n\n" + `data: {"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}` + "\n\n" + `data: {"type":"response.reasoning_summary_text.delta","delta":""}` + "\n\n", wantCalls: 2, wantSuccess: true},
 		{name: "未命名工具骨架仍允许切换", prefix: `data: {"type":"response.output_item.added","item":{"id":"discard-call","type":"function_call","arguments":""}}` + "\n\n", wantCalls: 2, wantSuccess: true},
 		{name: "控制事件超过缓冲上限仍允许切换", prefix: `data: {"type":"response.created","response":{"id":"discard-large","metadata":{"padding":"` + strings.Repeat("x", 64*1024) + `"}}}` + "\n\n", wantCalls: 2, wantSuccess: true},
+		{name: "健康渠道开始事件很大时正常成功", prefix: `data: {"type":"response.created","response":{"id":"large-created","instructions":"` + strings.Repeat("x", 300*1024) + `"}}` + "\n\n", healthy: true, wantCalls: 1, wantSuccess: true},
+		{name: "开始事件超过上限时原样放行不判失败", prefix: `data: {"type":"response.created","response":{"id":"large-created","instructions":"` + strings.Repeat("x", 9<<20) + `"}}` + "\n\n", healthy: true, wantCalls: 1, wantSuccess: true},
 		{name: "正文输出后不重复请求", prefix: `data: {"type":"response.output_text.delta","delta":"已输出正文"}` + "\n\n", wantCalls: 1},
 		{name: "思考文本输出后不重复请求", prefix: `data: {"type":"response.reasoning_summary_text.delta","delta":"已输出思考"}` + "\n\n", wantCalls: 1},
 		{name: "工具调用输出后不重复请求", prefix: `data: {"type":"response.output_item.added","item":{"id":"fc_test","type":"function_call","name":"read_note","call_id":"call_test","arguments":""}}` + "\n\n", wantCalls: 1},
@@ -53,7 +56,10 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 				hosts = append(hosts, req.URL.Host)
 				body := `data: {"type":"response.output_text.delta","delta":"备用渠道成功"}` + "\n\n" +
 					`data: {"type":"response.completed","response":{"status":"completed"}}` + "\n\n"
-				if len(hosts) == 1 || tc.allFail {
+				if tc.healthy {
+					require.NoError(t, helper.PingData(requestContext))
+					body = tc.prefix + body
+				} else if len(hosts) == 1 || tc.allFail {
 					// 确定性地重现请求等待阶段已写出的真实 SSE 保活帧。
 					require.NoError(t, helper.PingData(requestContext))
 					body = tc.prefix + `data: {"type":"response.failed","response":{"status":"failed","error":{"code":"gateway_concurrency_limit","message":"Concurrency limit exceeded for user, please retry later"}}}` + "\n\n"
@@ -85,6 +91,9 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 			assert.NotContains(t, w.Body.String(), "discard-reasoning")
 			assert.NotContains(t, w.Body.String(), "discard-call")
 			assert.NotContains(t, w.Body.String(), "discard-large")
+			if tc.healthy {
+				assert.Contains(t, w.Body.String(), "large-created")
+			}
 			if tc.wantSuccess {
 				assert.Contains(t, w.Body.String(), "备用渠道成功")
 				assert.Contains(t, w.Body.String(), "response.completed")
