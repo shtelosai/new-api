@@ -497,3 +497,42 @@ func TestRelayKeepsTailContentWithFinishReasonWhenStreamBreaks(t *testing.T) {
 	assert.Contains(t, body, "upstream_stream_error")
 	assert.NotContains(t, body, "message_stop")
 }
+
+func TestRelayClaudeClientMidStreamUsageDoesNotEndEarly(t *testing.T) {
+	chunk := func(body string) string { return "data: " + body + "\n\n" }
+	usageOnly := chunk(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)
+	content := func(text string) string {
+		return chunk(fmt.Sprintf(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"%s"}}]}`, text))
+	}
+	for _, tc := range []struct {
+		name, stream string
+		wantDone     bool
+	}{
+		// 正文 → 用量 → 空增量 → 上游报错：报错前不能出现正常结束。
+		{name: "usage-empty-error", stream: content("A段") + usageOnly + chunk(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{}}]}`) +
+			chunk(`{"error":{"message":"upstream dropped","type":"server_error"}}`)},
+		// 正文 → 中途用量 → 正文 → 结束：后一段正文不能因为中途用量被丢。
+		{name: "usage-in-middle", stream: content("A段") + usageOnly + content("B段") +
+			chunk(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) + "data: [DONE]\n\n", wantDone: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			modelName := uniqueRelaySoftCooldownModelName("claude-over-chat-" + tc.name)
+			channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+			useOpenAIChannels(t, channels, false)
+			w, _ := runRelayAgainstOpenAIChannels(t, types.RelayFormatClaude, modelName, channels[0], true, func(string) upstreamReply {
+				return upstreamReply{status: http.StatusOK, stream: true, body: "data: " + strings.TrimPrefix(tc.stream, "data: ")}
+			})
+			body := w.Body.String()
+			assert.Contains(t, body, "A段")
+			if tc.wantDone {
+				// 中途的用量包不能让流在 B 之前结束（是否补发结束事件沿用转换器原有行为）。
+				assert.Contains(t, body, "B段")
+				if stop := strings.Index(body, "message_stop"); stop >= 0 {
+					assert.Less(t, strings.Index(body, "B段"), stop)
+				}
+			} else {
+				assert.NotContains(t, body, "message_stop")
+			}
+		})
+	}
+}

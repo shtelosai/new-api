@@ -154,7 +154,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	sawFinish := false
 	lastForwarded := false
 	var latestUsage *dto.Usage // 接收过程中记下最近一次有效用量，失败收尾时按它结算
-	// 写出后只含用量的分段先扣住：格式转换（如转 Claude）会把它当成结束生成 message_stop；后面真有内容或正常结束再发。
+	// 写出后只含用量的分段先扣住：格式转换（如转 Claude）会把它当成结束生成 message_stop。
+	// OpenAI 格式在下一段内容前按原顺序放出；需要转换的协议一直扣到正常结束，用量按记下的真实值结算。
 	var held []string
 	flushHeld := func(sr *helper.StreamResult) {
 		for _, chunk := range held {
@@ -168,7 +169,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if committed && gate && isUsageOnlyChunk(lastStreamData) {
 				held = append(held, lastStreamData)
 			} else if committed {
-				flushHeld(sr)
+				if info.RelayFormat == types.RelayFormatOpenAI {
+					flushHeld(sr)
+				}
 				forward(lastStreamData, sr)
 			} else {
 				pending = append(pending, lastStreamData)
@@ -251,13 +254,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 		return usage, nil
 	}
-	if len(held) > 0 {
-		// 正常结束：扣住的用量分段按原顺序补发。
+	if len(held) > 0 && info.RelayFormat == types.RelayFormatOpenAI {
+		// 正常结束：OpenAI 格式把扣住的用量分段按原顺序补发；需要转换的协议不转发，用量由下面按真实值结算。
 		for _, chunk := range held {
 			_ = HandleStreamFormat(c, info, chunk, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
-		held = nil
 	}
+	held = nil
 	if len(pending) > 0 {
 		// 正常结束但一直没有实际内容（如只有角色与结束标记）：照原样补发缓冲的分段。
 		for _, chunk := range pending {
@@ -298,6 +301,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
+	if !containStreamUsage && latestUsage != nil {
+		// 最后一段没带用量时，用流中途上游报过的真实用量。
+		usage, containStreamUsage = latestUsage, true
+	}
 	if !containStreamUsage {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
