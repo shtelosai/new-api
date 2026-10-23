@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
@@ -47,7 +48,7 @@ func streamChunkHasOutput(data string) bool {
 		return true // 认不出的分段保守视为已输出，不再重放。
 	}
 	for _, choice := range chunk.Choices {
-		if choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" || len(choice.Delta.ToolCalls) > 0 || choice.FinishReason != nil {
+		if choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" || len(choice.Delta.ToolCalls) > 0 || (choice.FinishReason != nil && *choice.FinishReason != "") {
 			return true
 		}
 	}
@@ -90,9 +91,24 @@ func writeStreamInterrupted(c *gin.Context, info *relaycommon.RelayInfo) {
 	_ = helper.StringData(c, `{"error":{"message":"`+message+`","type":"upstream_error","code":"upstream_stream_error"}}`)
 }
 
-// 冒号前后可能有空白（有的上游按 Python 默认格式输出）；null 不算结束。
-var finishReasonPattern = regexp.MustCompile(`"finish_reason"\s*:\s*"`)
+// 非空的结束原因：冒号前后可能有空白（有的上游按 Python 默认格式输出），null 与空字符串都不算。
+var finishReasonPattern = regexp.MustCompile(`"finish_reason"\s*:\s*"[^"]`)
 
+// hasFinishReason 判断这一段是否带非空的结束原因；热路径只做字符串与正则判断，不解析 JSON。
 func hasFinishReason(data string) bool {
 	return strings.Contains(data, `"finish_reason"`) && finishReasonPattern.MatchString(data)
+}
+
+// streamChunkUsage 取出这一段里上游报的有效用量；没有或无效返回 nil。
+func streamChunkUsage(data string) *dto.Usage {
+	if !strings.Contains(data, `"usage"`) || strings.Contains(data, `"usage":null`) {
+		return nil
+	}
+	var chunk struct {
+		Usage *dto.Usage `json:"usage"`
+	}
+	if err := common.UnmarshalJsonStr(data, &chunk); err != nil || chunk.Usage == nil || !service.ValidUsage(chunk.Usage) {
+		return nil
+	}
+	return chunk.Usage
 }

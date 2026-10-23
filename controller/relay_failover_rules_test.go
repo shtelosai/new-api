@@ -79,6 +79,12 @@ func withAutoDisable(t *testing.T) {
 // runOpenAIRelay 按渠道域名给出上游回复，返回客户端收到的响应与依次访问的渠道域名。
 func runOpenAIRelay(t *testing.T, modelName string, firstChannel *model.Channel, stream bool, reply func(host string) upstreamReply) (*httptest.ResponseRecorder, []string) {
 	t.Helper()
+	return runRelayAgainstOpenAIChannels(t, types.RelayFormatOpenAI, modelName, firstChannel, stream, reply)
+}
+
+// runRelayAgainstOpenAIChannels 客户端按给定协议（OpenAI 或 Claude）请求，渠道都是 OpenAI 上游。
+func runRelayAgainstOpenAIChannels(t *testing.T, format types.RelayFormat, modelName string, firstChannel *model.Channel, stream bool, reply func(host string) upstreamReply) (*httptest.ResponseRecorder, []string) {
+	t.Helper()
 	previousTimeout := constant.StreamingTimeout
 	constant.StreamingTimeout = 30
 	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
@@ -105,14 +111,17 @@ func runOpenAIRelay(t *testing.T, modelName string, firstChannel *model.Channel,
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(fmt.Sprintf(
-		`{"model":"%s","stream":%t,"messages":[{"role":"user","content":"hello"}]}`, modelName, stream)))
+	path, body := "/v1/chat/completions", fmt.Sprintf(`{"model":"%s","stream":%t,"messages":[{"role":"user","content":"hello"}]}`, modelName, stream)
+	if format == types.RelayFormatClaude {
+		path, body = "/v1/messages", fmt.Sprintf(`{"model":"%s","stream":%t,"max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`, modelName, stream)
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 	common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{AcceptUnsetRatioModel: true})
 	require.Nil(t, middleware.SetupContextForSelectedChannel(c, firstChannel, modelName))
-	Relay(c, types.RelayFormatOpenAI)
+	Relay(c, format)
 	return w, hosts
 }
 
@@ -435,4 +444,23 @@ func TestRelayRetriesChatStreamWhoseFirstChunkIsUnparsable(t *testing.T) {
 	assert.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, hosts)
 	assert.Contains(t, w.Body.String(), "备用渠道")
 	assert.NotContains(t, w.Body.String(), "<html>")
+}
+
+func TestRelayClaudeClientNeverSeesSuccessEndBeforeInterruption(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("claude-over-chat-usage-tail")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+	// 正文 → 只有用量的分段 → 正常断开但没有结束标记。
+	tail := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"写了一半\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n"
+
+	w, hosts := runRelayAgainstOpenAIChannels(t, types.RelayFormatClaude, modelName, channels[0], true, func(string) upstreamReply {
+		return upstreamReply{status: http.StatusOK, stream: true, body: tail}
+	})
+
+	body := w.Body.String()
+	assert.Equal(t, []string{"channel-9700.test"}, hosts)
+	assert.Contains(t, body, "写了一半")
+	assert.Contains(t, body, "upstream_stream_error")
+	assert.NotContains(t, body, "message_stop", "断流前不能先给出正常结束")
 }

@@ -153,6 +153,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	failedAfterCommit := false
 	sawFinish := false
 	lastForwarded := false
+	var latestUsage *dto.Usage // 接收过程中记下最近一次有效用量，失败收尾时按它结算
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
@@ -174,6 +175,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		if hasFinishReason(data) {
 			sawFinish = true
+		}
+		if reported := streamChunkUsage(data); reported != nil {
+			latestUsage = reported
 		}
 		if oaiErr := streamChunkError(data); oaiErr != nil {
 			if !committed {
@@ -220,15 +224,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// 不补成功收尾；用量优先取上游最后一段里的真实值。
 		common.SetContextKey(c, constant.ContextKeyUpstreamFailedAfterCommit, true)
 		if !failedAfterCommit {
-			if !lastForwarded && lastStreamData != "" {
+			// 只补发带实际内容的尾段：只有用量或结束标记的分段经格式转换会生成成功终态（如 Claude 的 message_stop）。
+			if !lastForwarded && lastStreamData != "" && streamChunkHasOutput(lastStreamData) && !hasFinishReason(lastStreamData) {
 				_ = HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 			}
 			writeStreamInterrupted(c, info)
 		}
-		ignoredSend := false
-		if err := handleLastResponse(lastStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,
-			&containStreamUsage, info, &ignoredSend); err != nil {
-			logger.LogError(c, "error handling last response after stream failure: "+err.Error())
+		if latestUsage != nil {
+			usage, containStreamUsage = latestUsage, true
 		}
 		if !containStreamUsage {
 			usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
