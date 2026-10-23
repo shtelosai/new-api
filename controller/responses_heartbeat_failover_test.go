@@ -33,6 +33,7 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 		allFail     bool
 		healthy     bool
 		wantCalls   int
+		wantOrder   []string
 		wantSuccess bool
 	}{
 		{name: "只有心跳时切换", wantCalls: 2, wantSuccess: true},
@@ -44,6 +45,8 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 		{name: "控制事件超过缓冲上限仍允许切换", prefix: `data: {"type":"response.created","response":{"id":"discard-large","metadata":{"padding":"` + strings.Repeat("x", 64*1024) + `"}}}` + "\n\n", wantCalls: 2, wantSuccess: true},
 		{name: "健康渠道开始事件很大时正常成功", prefix: `data: {"type":"response.created","response":{"id":"large-created","instructions":"` + strings.Repeat("x", 300*1024) + `"}}` + "\n\n", healthy: true, wantCalls: 1, wantSuccess: true},
 		{name: "开始事件超过上限时原样放行不判失败", prefix: `data: {"type":"response.created","response":{"id":"large-created","instructions":"` + strings.Repeat("x", 9<<20) + `"}}` + "\n\n", healthy: true, wantCalls: 1, wantSuccess: true},
+		{name: "多个开始事件累计超限时按序各放行一次", prefix: `data: {"type":"response.created","response":{"id":"large-a","instructions":"` + strings.Repeat("x", 5<<20) + `"}}` + "\n\n" + `data: {"type":"response.in_progress","response":{"id":"large-b","instructions":"` + strings.Repeat("x", 5<<20) + `"}}` + "\n\n", healthy: true, wantCalls: 1, wantSuccess: true, wantOrder: []string{"large-a", "large-b", "备用渠道成功"}},
+		{name: "超限放行后再失败不重复请求", prefix: `data: {"type":"response.created","response":{"id":"large-created","instructions":"` + strings.Repeat("x", 9<<20) + `"}}` + "\n\n", wantCalls: 1, wantOrder: []string{"large-created", "gateway_concurrency_limit"}},
 		{name: "正文输出后不重复请求", prefix: `data: {"type":"response.output_text.delta","delta":"已输出正文"}` + "\n\n", wantCalls: 1},
 		{name: "思考文本输出后不重复请求", prefix: `data: {"type":"response.reasoning_summary_text.delta","delta":"已输出思考"}` + "\n\n", wantCalls: 1},
 		{name: "工具调用输出后不重复请求", prefix: `data: {"type":"response.output_item.added","item":{"id":"fc_test","type":"function_call","name":"read_note","call_id":"call_test","arguments":""}}` + "\n\n", wantCalls: 1},
@@ -91,8 +94,15 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 			assert.NotContains(t, w.Body.String(), "discard-reasoning")
 			assert.NotContains(t, w.Body.String(), "discard-call")
 			assert.NotContains(t, w.Body.String(), "discard-large")
-			if tc.healthy {
+			if tc.healthy && tc.wantOrder == nil {
 				assert.Contains(t, w.Body.String(), "large-created")
+			}
+			last := -1
+			for _, marker := range tc.wantOrder {
+				assert.Equal(t, 1, strings.Count(w.Body.String(), marker), marker)
+				index := strings.Index(w.Body.String(), marker)
+				assert.Greater(t, index, last, marker)
+				last = index
 			}
 			if tc.wantSuccess {
 				assert.Contains(t, w.Body.String(), "备用渠道成功")
