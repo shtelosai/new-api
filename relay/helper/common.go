@@ -90,7 +90,8 @@ func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data st
 	if requestContextDone(c) {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
-	// 正式事件写出后禁止重放；请求等待阶段的 PingData 不设置此标记。
+	// 原生 Responses 入口会先缓冲开始/空骨架事件；放行输出后禁止重放。
+	// 其他未做缓冲的协议转换入口仍保留写出即提交的边界。
 	if service.TworkResponsesFailoverEnabled(c) {
 		common.SetContextKey(c, constant.ContextKeyTworkResponsesStreamCommitted, true)
 	}

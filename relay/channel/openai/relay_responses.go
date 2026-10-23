@@ -153,7 +153,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			if streamResponse.Type == "response.output_text.delta" && streamResponse.Delta == "" {
 				return
 			}
-			if (streamResponse.Type == "response.created" || streamResponse.Type == "response.in_progress") && !service.TworkResponsesStreamCommitted(c) && pendingBytes+len(data) <= 64*1024 {
+			if !service.TworkResponsesStreamCommitted(c) && !terminal && !helper.ResponseChunkHasSemanticOutput(streamResponse, data) {
+				// 不能因缓冲耗尽把开始事件当作已输出；终止本次尝试后仍可兜底。
+				if pendingBytes+len(data) > 64*1024 {
+					streamError = types.NewOpenAIError(fmt.Errorf("上游 Responses 开始事件超过缓冲上限"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+					sr.Stop(streamError)
+					return
+				}
 				pending = append(pending, data)
 				pendingBytes += len(data)
 				return

@@ -72,6 +72,19 @@ def main():
                     result.update(status='failed', error={'code': code, 'message': 'Concurrency limit exceeded for user, please retry later' if heartbeat else 'synthetic failure'})
                     terminal = 'response.failed'
                 events = []
+                if tag in ('heartbeat-message', 'heartbeat-reasoning') and channel == 301:
+                    item = {'type': 'message', 'id': 'discard-control', 'role': 'assistant', 'content': []}
+                    part_type = 'output_text'
+                    part_event = 'response.content_part.added'
+                    if tag == 'heartbeat-reasoning':
+                        item = {'type': 'reasoning', 'id': 'discard-control', 'summary': []}
+                        part_type = 'summary_text'
+                        part_event = 'response.reasoning_summary_part.added'
+                    events.extend([
+                        {'type': 'response.created', 'response': {'id': 'discard-start'}},
+                        {'type': 'response.output_item.added', 'item': item},
+                        {'type': part_event, 'part': {'type': part_type, 'text': ''}},
+                    ])
                 if not heartbeat or partial:
                     events.append({'type': 'response.output_text.delta', 'delta': 'partial' if partial else 'OK'})
                 if tag == 'heartbeat-tool' and channel == 301:
@@ -200,22 +213,24 @@ def main():
             assert db.execute('SELECT COUNT(*) FROM channel_model_disabled').fetchone()[0] == 0
         heartbeat_cases = []
         failed.clear()
-        for tag in ('heartbeat-only', 'heartbeat-text', 'heartbeat-tool'):
+        for tag in ('heartbeat-only', 'heartbeat-message', 'heartbeat-reasoning', 'heartbeat-text', 'heartbeat-tool'):
             # 等待既有真实冷却窗口，确保每个场景都实际先请求首选渠道。
             time.sleep(1.2)
             status, body = relay(tag, tag, stream=True)
-            expected = [301, 302] if tag == 'heartbeat-only' else [301]
+            can_retry = tag in ('heartbeat-only', 'heartbeat-message', 'heartbeat-reasoning')
+            expected = [301, 302] if can_retry else [301]
             assert status == 200 and calls == expected, (tag, status, calls, body)
             assert body.startswith(b': PING\n'), (tag, body)
-            if tag == 'heartbeat-only':
+            if can_retry:
                 assert b'"delta": "OK"' in body and b'gateway_concurrency_limit' not in body, body
+                assert b'discard-' not in body, body
             else:
                 assert b'gateway_concurrency_limit' in body and b'"delta": "OK"' not in body, body
                 assert (b'partial' if tag == 'heartbeat-text' else b'call_heartbeat') in body, body
             heartbeat_cases.append({'case': tag, 'channels': list(calls), 'real_keepalive_received': True, 'status': status})
-        wait_until(lambda: len(logs()) == 10)
+        wait_until(lambda: len(logs()) == 12)
         consumed = logs()
-        assert [row[0] for row in consumed] == [301,302,302,302,301,301,302,302,301,301], consumed
+        assert [row[0] for row in consumed] == [301,302,302,302,301,301,302,302,302,302,301,301], consumed
         assert all(row[1] > 0 and row[2:] == (10,5) for row in consumed), consumed
         result = {'result':'PASS','version':version,'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
                   'synthetic_only':True,'priority_failover':True,'sticky_after_recovery':True,'cooldown':True,

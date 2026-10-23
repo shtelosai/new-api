@@ -37,7 +37,12 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 		{name: "只有心跳时切换", wantCalls: 2, wantSuccess: true},
 		{name: "心跳和控制事件时切换", prefix: `data: {"type":"response.created","response":{"id":"discard-created"}}` + "\n\n", wantCalls: 2, wantSuccess: true},
 		{name: "空正文增量仍允许切换", prefix: `data: {"type":"response.output_text.delta","delta":""}` + "\n\n", wantCalls: 2, wantSuccess: true},
+		{name: "空消息和内容骨架仍允许切换", prefix: `data: {"type":"response.output_item.added","item":{"id":"discard-message","type":"message","role":"assistant","content":[]}}` + "\n\n" + `data: {"type":"response.content_part.added","part":{"type":"output_text","text":""}}` + "\n\n", wantCalls: 2, wantSuccess: true},
+		{name: "空思考骨架仍允许切换", prefix: `data: {"type":"response.output_item.added","item":{"id":"discard-reasoning","type":"reasoning","summary":[]}}` + "\n\n" + `data: {"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}` + "\n\n" + `data: {"type":"response.reasoning_summary_text.delta","delta":""}` + "\n\n", wantCalls: 2, wantSuccess: true},
+		{name: "未命名工具骨架仍允许切换", prefix: `data: {"type":"response.output_item.added","item":{"id":"discard-call","type":"function_call","arguments":""}}` + "\n\n", wantCalls: 2, wantSuccess: true},
+		{name: "控制事件超过缓冲上限仍允许切换", prefix: `data: {"type":"response.created","response":{"id":"discard-large","metadata":{"padding":"` + strings.Repeat("x", 64*1024) + `"}}}` + "\n\n", wantCalls: 2, wantSuccess: true},
 		{name: "正文输出后不重复请求", prefix: `data: {"type":"response.output_text.delta","delta":"已输出正文"}` + "\n\n", wantCalls: 1},
+		{name: "思考文本输出后不重复请求", prefix: `data: {"type":"response.reasoning_summary_text.delta","delta":"已输出思考"}` + "\n\n", wantCalls: 1},
 		{name: "工具调用输出后不重复请求", prefix: `data: {"type":"response.output_item.added","item":{"id":"fc_test","type":"function_call","name":"read_note","call_id":"call_test","arguments":""}}` + "\n\n", wantCalls: 1},
 		{name: "全部超并发时保留最后错误", allFail: true, wantCalls: 3},
 	} {
@@ -76,6 +81,10 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 			}
 			assert.Contains(t, w.Body.String(), ": PING\n\n")
 			assert.NotContains(t, w.Body.String(), "discard-created")
+			assert.NotContains(t, w.Body.String(), "discard-message")
+			assert.NotContains(t, w.Body.String(), "discard-reasoning")
+			assert.NotContains(t, w.Body.String(), "discard-call")
+			assert.NotContains(t, w.Body.String(), "discard-large")
 			if tc.wantSuccess {
 				assert.Contains(t, w.Body.String(), "备用渠道成功")
 				assert.Contains(t, w.Body.String(), "response.completed")
@@ -96,6 +105,8 @@ func TestResponsesHeartbeatFailoverOverHTTP(t *testing.T) {
 		wantCalls int32
 	}{
 		{name: "只有心跳时切换", wantCalls: 1},
+		{name: "空消息和内容块后切换", prefix: `data: {"type":"response.output_item.added","item":{"id":"discard-message","type":"message","content":[]}}` + "\n\n" + `data: {"type":"response.content_part.added","part":{"type":"output_text","text":""}}` + "\n\n", wantCalls: 1},
+		{name: "空思考项后切换", prefix: `data: {"type":"response.output_item.added","item":{"id":"discard-reasoning","type":"reasoning","summary":[]}}` + "\n\n", wantCalls: 1},
 		{name: "正文已输出时禁止切换", prefix: `data: {"type":"response.output_text.delta","delta":"已输出正文"}` + "\n\n"},
 		{name: "工具调用已输出时禁止切换", prefix: `data: {"type":"response.function_call_arguments.delta","delta":"{}","item_id":"fc_test"}` + "\n\n"},
 	} {
@@ -155,6 +166,7 @@ func TestResponsesHeartbeatFailoverOverHTTP(t *testing.T) {
 				assert.Contains(t, string(remaining), "备用渠道成功")
 				assert.Contains(t, string(remaining), "response.completed")
 				assert.NotContains(t, string(remaining), "gateway_concurrency_limit")
+				assert.NotContains(t, string(remaining), "discard-")
 			} else {
 				assert.Contains(t, string(remaining), "gateway_concurrency_limit")
 				assert.NotContains(t, string(remaining), "备用渠道成功")
@@ -240,5 +252,53 @@ func TestResponsesHeartbeatDoesNotClaimSemanticCommitInLogs(t *testing.T) {
 		info, ok := adminInfo["soft_cooldown"].(map[string]interface{})
 		require.True(t, ok)
 		assert.Equal(t, output, info["stream_semantic_committed"])
+	}
+}
+
+func TestResponsesOMPControlPreludeFailuresRetry(t *testing.T) {
+	prelude := `data: {"type":"response.created","response":{"id":"discard-created"}}` + "\n\n" +
+		`data: {"type":"response.in_progress"}` + "\n\n" +
+		`data: {"type":"response.output_item.added","item":{"id":"discard-reasoning","type":"reasoning","summary":[]}}` + "\n\n" +
+		`data: {"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}` + "\n\n" +
+		`data: {"type":"response.output_item.added","item":{"id":"discard-message","type":"message","content":[]}}` + "\n\n" +
+		`data: {"type":"response.content_part.added","part":{"type":"output_text","text":""}}` + "\n\n"
+	for _, failure := range []string{
+		`data: {"type":"error","code":"server_error","message":"upstream overloaded"}` + "\n\n",
+		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"upstream overloaded"}}}` + "\n\n",
+		"", // 上游只发了骨架便断开。
+	} {
+		t.Run(failure, func(t *testing.T) {
+			var hosts []string
+			router, name, _ := setupResponsesFailoverTest(t, relayRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				hosts = append(hosts, req.URL.Host)
+				body := prelude + failure
+				if len(hosts) > 1 {
+					body = `data: {"type":"response.created","response":{"id":"kept-created"}}` + "\n\n" +
+						`data: {"type":"response.output_item.added","item":{"id":"kept-message","type":"message","content":[]}}` + "\n\n" +
+						`data: {"type":"response.output_text.delta","delta":"backup answer"}` + "\n\n" +
+						`data: {"type":"response.completed","response":{"status":"completed"}}` + "\n\n"
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			}))
+			require.NoError(t, model.DB.Model(&model.Channel{}).Where("models = ?", name).Update("setting", `{"twork_runtime":"omp","twork_wire_api":"responses","pass_through_body_enabled":true}`).Error)
+			model.InitChannelCache()
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"hello","stream":true}`, name)))
+			for key, value := range map[string]string{"Content-Type": "application/json", "X-Twork-Client-Version": "4.2.4", "X-Twork-Client-Capabilities": "model-routes-v4", "X-Twork-Agent-Runtime": "omp", "X-Twork-Omp-Version": "18.12.2", "X-Twork-Wire-Api": "responses", "X-Twork-Route-Mode": "model"} {
+				req.Header.Set(key, value)
+			}
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			require.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, hosts)
+			body := w.Body.String()
+			assert.NotContains(t, body, "discard-")
+			assert.NotContains(t, body, "upstream overloaded")
+			previous := -1
+			for _, event := range []string{"kept-created", "kept-message", "backup answer", "response.completed"} {
+				next := strings.Index(body, event)
+				assert.Greater(t, next, previous, body)
+				previous = next
+			}
+		})
 	}
 }
