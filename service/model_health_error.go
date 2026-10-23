@@ -92,6 +92,42 @@ var softNewAPINoChannelFragments = []string{
 	"可用渠道失败",
 }
 
+// 上游账号余额/额度耗尽的报错片段；上游若也是 new-api，会透传它自己的预扣失败文案。
+var upstreamQuotaExhaustedFragments = []string{
+	"insufficient balance",
+	"insufficient_quota",
+	"insufficient quota",
+	"exceeded_current_quota",
+	"exceeded your current quota",
+	"credit balance is too low",
+	"quota_exhausted",
+	"arrearage",
+	"token quota is not enough",
+	"user quota is not enough",
+	"insufficient_user_quota",
+	"pre_consume_token_quota_failed",
+	"余额不足",
+	"额度不足",
+	"预扣费额度失败",
+}
+
+// IsUpstreamQuotaExhaustedError 判断错误是否为上游渠道账号余额或额度耗尽。
+//
+// 本网关自身的预扣失败是 new_api_error 类型，不属于此类，仍按用户额度不足返回。
+func IsUpstreamQuotaExhaustedError(err *types.NewAPIError) bool {
+	if err == nil || err.GetErrorType() == types.ErrorTypeNewAPIError {
+		return false
+	}
+	openAIError := err.ToOpenAIError()
+	text := normalizeModelHealthText(strings.Join([]string{
+		openAIError.Type,
+		openAIErrorCodeToString(openAIError.Code),
+		openAIError.Message,
+		err.Error(),
+	}, " "))
+	return containsAnyModelHealthFragment(text, upstreamQuotaExhaustedFragments)
+}
+
 // IsSoftModelHealthError 判断错误是否属于上游临时不可用/限流/容量不足。
 //
 // 软错误不代表 (channel, model) 永久坏了；自动禁用流程会跳过这类错误。

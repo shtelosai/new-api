@@ -228,3 +228,82 @@ func TestShouldDisableChannelHardErrorHonorsGlobalSwitch(t *testing.T) {
 
 	require.False(t, ShouldDisableChannel(err))
 }
+
+func TestIsUpstreamQuotaExhaustedError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *types.NewAPIError
+		want bool
+	}{
+		{
+			name: "月之暗面账号欠费暂停",
+			err: types.WithOpenAIError(types.OpenAIError{
+				Message: "Your account org-x <ak-x> is suspended due to insufficient balance, please recharge your account or check your plan and billing details",
+				Type:    "exceeded_current_quota_error",
+			}, http.StatusTooManyRequests),
+			want: true,
+		},
+		{
+			name: "上游 new-api 透传用户额度不足",
+			err: types.WithOpenAIError(types.OpenAIError{
+				Message: "用户额度不足, 剩余额度: ＄-0.005110",
+				Type:    "new_api_error",
+				Code:    "insufficient_user_quota",
+			}, http.StatusForbidden),
+			want: true,
+		},
+		{
+			name: "Anthropic 余额过低",
+			err: types.WithClaudeError(types.ClaudeError{
+				Type:    "invalid_request_error",
+				Message: "Your credit balance is too low to access the Anthropic API.",
+			}, http.StatusBadRequest),
+			want: true,
+		},
+		{
+			name: "本网关自身预扣失败不算上游",
+			err: types.NewErrorWithStatusCode(
+				errors.New("token quota is not enough, token remain quota: ＄0.01, need quota: ＄0.02"),
+				types.ErrorCodePreConsumeTokenQuotaFailed,
+				http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(),
+			),
+			want: false,
+		},
+		{
+			name: "普通限流不算",
+			err: types.WithOpenAIError(types.OpenAIError{
+				Message: "Upstream rate limit exceeded, please retry later",
+				Type:    "rate_limit_error",
+			}, http.StatusTooManyRequests),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsUpstreamQuotaExhaustedError(tt.err))
+		})
+	}
+}
+
+func TestShouldDisableChannelUpstreamQuotaExhaustedWithoutStatusOrKeywordConfig(t *testing.T) {
+	origEnabled := common.AutomaticDisableChannelEnabled
+	origRanges := operation_setting.AutomaticDisableStatusCodeRanges
+	origKeywords := operation_setting.AutomaticDisableKeywords
+	common.AutomaticDisableChannelEnabled = true
+	operation_setting.AutomaticDisableStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 401, End: 401}}
+	operation_setting.AutomaticDisableKeywords = []string{}
+	t.Cleanup(func() {
+		common.AutomaticDisableChannelEnabled = origEnabled
+		operation_setting.AutomaticDisableStatusCodeRanges = origRanges
+		operation_setting.AutomaticDisableKeywords = origKeywords
+	})
+
+	err := types.WithOpenAIError(types.OpenAIError{
+		Message: "Your account org-x <ak-x> is suspended due to insufficient balance, please recharge your account or check your plan and billing details",
+		Type:    "exceeded_current_quota_error",
+	}, http.StatusTooManyRequests)
+
+	assert.True(t, ShouldDisableChannel(err))
+}

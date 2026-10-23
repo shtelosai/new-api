@@ -186,6 +186,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			if service.IsUpstreamQuotaExhaustedError(newAPIError) {
+				// 上游渠道欠费不是用户额度问题；原文已进日志，回给用户的不带额度字样，避免客户端误报积分不足。
+				newAPIError = types.NewErrorWithStatusCode(errors.New("该模型的上游服务暂时不可用，请稍后重试或更换其他模型"), types.ErrorCodeUpstreamUnavailable, http.StatusServiceUnavailable)
+			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			if relayFormat == types.RelayFormatOpenAIRealtime {
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -499,6 +503,10 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return true
 	}
 	if service.TworkResponsesFailoverEnabled(c) && service.IsRelaySoftFailure(c, openaiErr) {
+		return true
+	}
+	// 上游账号余额耗尽与请求内容无关，换渠道即可，不受状态码重试名单限制。
+	if service.IsUpstreamQuotaExhaustedError(openaiErr) {
 		return true
 	}
 	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {

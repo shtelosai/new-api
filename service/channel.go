@@ -55,6 +55,10 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	if types.IsSkipRetryError(err) {
 		return false
 	}
+	// 上游账号欠费/额度耗尽时该渠道持续不可用，不依赖状态码或关键词配置。
+	if IsUpstreamQuotaExhaustedError(err) {
+		return true
+	}
 	if err.GetErrorCode() == types.ErrorCodeEmptyResponse {
 		return false
 	}
