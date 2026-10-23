@@ -240,7 +240,7 @@ func (b closeClientAtEOF) Read(p []byte) (int, error) {
 
 func (closeClientAtEOF) Close() error { return nil }
 
-func TestResponsesProbeRecoversWhenClientDisconnectsAfterEnd(t *testing.T) {
+func TestResponsesNonStreamProbeIsNotConfirmedAfterClientLeaves(t *testing.T) {
 	var hosts []string
 	broken := true
 	var clientGone context.CancelFunc
@@ -279,8 +279,8 @@ func TestResponsesProbeRecoversWhenClientDisconnectsAfterEnd(t *testing.T) {
 		return hosts
 	}
 	assert.Equal(t, []string{"channel-9700.test"}, send("probe-b", true), "冷却到期放一个请求试探")
-	// 试探成功后应立即恢复原优先级；没确认的话试探名额还占着，新会话会被挤到备用渠道。
-	assert.Equal(t, []string{"channel-9700.test"}, send("probe-c", false), "试探成功后新会话回到最高优先级")
+	// 非流式没有统一完成标记，客户端已走时保守不确认：试探名额仍占着，新会话先走备用渠道。
+	assert.Equal(t, []string{"channel-9701.test"}, send("probe-c", false), "客户端已走的非流式试探不算恢复")
 }
 
 // 客户端收到结束事件就断开：模拟桌面端读到 response.completed 立即关闭连接。

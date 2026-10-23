@@ -532,11 +532,11 @@ func relayRequestContextDone(c *gin.Context) bool {
 // relayUpstreamFinished 这次上游是否真的完整回完：客户端读到结尾就断开很常见（桌面端就是），
 // 不能因此不确认试探成功、不记新渠道的会话粘性；但客户端中途放弃时上游未必正常，不能据此算成功。
 func relayUpstreamFinished(c *gin.Context, info *relaycommon.RelayInfo) bool {
-	if !relayRequestContextDone(c) || !info.IsStream {
-		// 非流式返回 nil 时已完整读完上游响应；客户端中途走了会取消上游读取并报错。
+	if !relayRequestContextDone(c) {
 		return true
 	}
-	if info.StreamStatus == nil {
+	// 非流式没有统一的完成标记（如语音合成读正文出错仍返回成功），客户端已走时保守不算。
+	if !info.IsStream || info.StreamStatus == nil {
 		return false
 	}
 	switch info.StreamStatus.EndReason {

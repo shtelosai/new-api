@@ -566,7 +566,7 @@ func TestRelayUpstreamFinishedOnlyWhenUpstreamEndedItself(t *testing.T) {
 		return &relaycommon.RelayInfo{IsStream: true, StreamStatus: status}
 	}
 	assert.True(t, relayUpstreamFinished(newContext(false), stream(relaycommon.StreamEndReasonClientGone)), "客户端还在：沿用原成功判断")
-	assert.True(t, relayUpstreamFinished(newContext(true), &relaycommon.RelayInfo{}), "非流式返回成功即已完整读完上游")
+	assert.False(t, relayUpstreamFinished(newContext(true), &relaycommon.RelayInfo{}), "非流式没有统一完成标记，客户端已走时不算")
 	assert.True(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonDone)), "上游发完 [DONE] 后客户端断开")
 	assert.True(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonEOF)), "上游正常关闭连接后客户端断开")
 	assert.False(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonClientGone)), "客户端中途放弃：上游未必正常，不算成功")
