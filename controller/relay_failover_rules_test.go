@@ -511,9 +511,16 @@ func TestRelayClaudeClientMidStreamUsageDoesNotEndEarly(t *testing.T) {
 		// 正文 → 用量 → 空增量 → 上游报错：报错前不能出现正常结束。
 		{name: "usage-empty-error", stream: content("A段") + usageOnly + chunk(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{}}]}`) +
 			chunk(`{"error":{"message":"upstream dropped","type":"server_error"}}`)},
-		// 正文 → 中途用量 → 正文 → 结束：后一段正文不能因为中途用量被丢。
+		// 正文 → 中途用量 → 正文 → 结束：后一段正文不能因为中途用量被丢，最后要带上用量正常结束。
 		{name: "usage-in-middle", stream: content("A段") + usageOnly + content("B段") +
 			chunk(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) + "data: [DONE]\n\n", wantDone: true},
+		// 标准顺序：正文 → 结束 → 用量 → [DONE]，行为不变。
+		{name: "standard", stream: content("A段") + content("B段") +
+			chunk(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) + usageOnly + "data: [DONE]\n\n", wantDone: true},
+		// 正文 → 结束 → 用量 → 空增量 → [DONE]：用量不在最后一段也要正常结束。
+		{name: "usage-before-empty-tail", stream: content("A段") + content("B段") +
+			chunk(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) + usageOnly +
+			chunk(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{}}]}`) + "data: [DONE]\n\n", wantDone: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			modelName := uniqueRelaySoftCooldownModelName("claude-over-chat-" + tc.name)
@@ -525,11 +532,13 @@ func TestRelayClaudeClientMidStreamUsageDoesNotEndEarly(t *testing.T) {
 			body := w.Body.String()
 			assert.Contains(t, body, "A段")
 			if tc.wantDone {
-				// 中途的用量包不能让流在 B 之前结束（是否补发结束事件沿用转换器原有行为）。
+				// 全部正文之后正常结束，结束事件带上上游报的用量。
 				assert.Contains(t, body, "B段")
-				if stop := strings.Index(body, "message_stop"); stop >= 0 {
-					assert.Less(t, strings.Index(body, "B段"), stop)
-				}
+				stop := strings.Index(body, "message_stop")
+				require.GreaterOrEqual(t, stop, 0, "收到过用量就必须正常结束")
+				assert.Less(t, strings.Index(body, "B段"), stop)
+				assert.Equal(t, 1, strings.Count(body, "event: message_stop"), "只结束一次")
+				assert.Contains(t, body, `"output_tokens":3`)
 			} else {
 				assert.NotContains(t, body, "message_stop")
 			}

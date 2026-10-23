@@ -312,7 +312,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 
-	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo != nil && latestUsage != nil {
+		// 流里报过真实用量：自己转换最后一段；转换器还没收尾（用量不在最后一段时会这样），
+		// 就在全部正文之后按这份用量补一次结束，结束事件带上用量。没报过用量的流仍走原收尾。
+		info.ClaudeConvertInfo.Usage = usage
+		_ = HandleStreamFormat(c, info, lastStreamData, false, false)
+		if !info.ClaudeConvertInfo.Done {
+			_ = HandleStreamFormat(c, info, usageOnlyChunk(responseId, createAt, model, usage), false, false)
+		}
+	} else {
+		HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	}
 
 	return usage, nil
 }

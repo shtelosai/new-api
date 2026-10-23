@@ -141,3 +141,12 @@ func withoutFinishReason(data string) string {
 	}
 	return string(encoded)
 }
+
+// usageOnlyChunk 拼一个只带用量的 Chat 分段，交给格式转换生成带用量的结束事件。
+func usageOnlyChunk(id string, created int64, model string, usage *dto.Usage) string {
+	encoded, err := common.Marshal(map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []any{}, "usage": usage})
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
