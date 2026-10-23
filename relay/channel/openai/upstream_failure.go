@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -87,4 +88,11 @@ func writeStreamInterrupted(c *gin.Context, info *relaycommon.RelayInfo) {
 		return
 	}
 	_ = helper.StringData(c, `{"error":{"message":"`+message+`","type":"upstream_error","code":"upstream_stream_error"}}`)
+}
+
+// 冒号前后可能有空白（有的上游按 Python 默认格式输出）；null 不算结束。
+var finishReasonPattern = regexp.MustCompile(`"finish_reason"\s*:\s*"`)
+
+func hasFinishReason(data string) bool {
+	return strings.Contains(data, `"finish_reason"`) && finishReasonPattern.MatchString(data)
 }

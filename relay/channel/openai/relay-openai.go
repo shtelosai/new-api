@@ -172,7 +172,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			sr.Stop(upstreamErr)
 			return
 		}
-		if strings.Contains(data, `"finish_reason":"`) {
+		if hasFinishReason(data) {
 			sawFinish = true
 		}
 		if oaiErr := streamChunkError(data); oaiErr != nil {
