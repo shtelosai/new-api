@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -71,4 +72,19 @@ func writeStreamErrorAfterCommit(c *gin.Context, info *relaycommon.RelayInfo, ra
 		return
 	}
 	_ = helper.StringData(c, raw)
+}
+
+// streamChunkParsable 判断一段是不是合法 JSON；[DONE] 之类的结束标记不会走到这里。
+func streamChunkParsable(data string) bool {
+	return data == "" || json.Valid([]byte(data))
+}
+
+// writeStreamInterrupted 写出正文后上游断流：发客户端认得的断流错误帧，它会按断流从断点续写。
+func writeStreamInterrupted(c *gin.Context, info *relaycommon.RelayInfo) {
+	const message = "The upstream service reported an error during streaming."
+	if info.RelayFormat == types.RelayFormatClaude {
+		_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: types.ClaudeError{Type: "upstream_stream_error", Message: message}})
+		return
+	}
+	_ = helper.StringData(c, `{"error":{"message":"`+message+`","type":"upstream_error","code":"upstream_stream_error"}}`)
 }

@@ -84,6 +84,16 @@ type ChannelSoftCooldownEntry struct {
 	Strikes int `json:"strikes,omitempty"`
 	// 到期时间的毫秒数，供 Redis 脚本原子比较。
 	ExpiresAtMs int64 `json:"expires_at_ms,omitempty"`
+	// WaitUntil 只在读取时填：到期后试探名额被别人占着，要再等到这个时间；ExpiresAt 保持不变，作为这次故障的代次。
+	WaitUntil time.Time `json:"-"`
+}
+
+// AvailableAt 这个渠道最早什么时候能再选：冷却到期，或试探名额释放。
+func (e ChannelSoftCooldownEntry) AvailableAt() time.Time {
+	if e.WaitUntil.After(e.ExpiresAt) {
+		return e.WaitUntil
+	}
+	return e.ExpiresAt
 }
 
 // 读旧次数、算新次数、写入在 Redis 里一步完成，并发失败与试探确认不会互相覆盖。
@@ -414,7 +424,8 @@ func GetChannelSoftCooldown(c *gin.Context, channelID int, modelName string) (en
 	}
 	if !entry.ExpiresAt.After(time.Now()) {
 		if entry.ProbeAfterExpiry && ChannelFailoverEligible(c) && !allowResponsesRecoveryProbe(c, key, entry) {
-			entry.ExpiresAt = time.Now().Add(responsesRecoveryProbeInterval)
+			// 不改 ExpiresAt：试探名额与恢复确认都按它认同一次故障，改了会让并发请求各拿一个名额。
+			entry.WaitUntil = time.Now().Add(responsesRecoveryProbeInterval)
 			return entry, true
 		}
 		return ChannelSoftCooldownEntry{}, false

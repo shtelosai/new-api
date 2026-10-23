@@ -169,3 +169,37 @@ func TestModelHasConfiguredChannelsAcrossAutoGroups(t *testing.T) {
 	assert.False(t, model.ModelHasConfiguredChannels("default", "configured-model", 0, false))
 	assert.False(t, model.ModelHasConfiguredChannels("auto", "never-configured-model", 0, false))
 }
+
+func TestExpiredCooldownProbeLeaseCannotBeBypassedAndSuccessClearsStrikes(t *testing.T) {
+	setupChannelSoftCooldownTest(t, true, 30)
+	const channelID = 92201
+	const modelName = "probe-lease"
+	cleanupChannelSoftCooldownKey(t, channelID, modelName)
+	key := fmt.Sprintf("%d:%s", channelID, modelName)
+	RecordChannelFailureCooldown(nil, channelID, modelName, 502, "upstream_error")
+	entry, _, err := getChannelSoftCooldownCache().Get(key)
+	require.NoError(t, err)
+	entry.ExpiresAt = time.Now().Add(-time.Second)
+	entry.ProbeAfterExpiry = true
+	require.NoError(t, getChannelSoftCooldownCache().SetWithTTL(key, entry, time.Minute))
+
+	newCtx := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		return c
+	}
+	prober, other := newCtx(), newCtx()
+	_, cooling := GetChannelSoftCooldown(prober, channelID, modelName)
+	require.False(t, cooling, "第一个请求拿到试探名额")
+	seen, cooling := GetChannelSoftCooldown(other, channelID, modelName)
+	require.True(t, cooling)
+	// 别的请求拿着读到的记录走「全冷却放行」，也拿不到第二个名额。
+	assert.False(t, claimCoolingFallback(other, key, seen))
+	assert.True(t, seen.AvailableAt().After(time.Now()))
+
+	// 试探成功：整条记录清掉，连续次数归零。
+	CompleteResponsesRecovery(prober, channelID, modelName)
+	_, found, err := getChannelSoftCooldownCache().Get(key)
+	require.NoError(t, err)
+	assert.False(t, found)
+}

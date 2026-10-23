@@ -381,3 +381,58 @@ func TestRelayDoesNotFinishChatStreamBrokenAfterOutput(t *testing.T) {
 	_, cooling := service.GetChannelSoftCooldown(nil, channels[0].Id, modelName)
 	assert.True(t, cooling)
 }
+
+func TestRelayTreatsChatStreamWithoutFinishAsBroken(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("chat-stream-no-finish")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+	// 上游正常断开，但既没有 finish_reason 也没有 [DONE]。
+	noFinish := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"写了一半\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"最后一段\"}}]}\n\n"
+
+	w, hosts := runOpenAIRelay(t, modelName, channels[0], true, func(string) upstreamReply {
+		return upstreamReply{status: http.StatusOK, stream: true, body: noFinish}
+	})
+
+	assert.Equal(t, []string{"channel-9700.test"}, hosts)
+	// 最后一段照样发出去，接着是客户端认得的断流错误帧，没有成功收尾。
+	assert.Contains(t, w.Body.String(), "最后一段")
+	assert.Contains(t, w.Body.String(), "upstream_stream_error")
+	assert.NotContains(t, w.Body.String(), "[DONE]")
+	_, cooling := service.GetChannelSoftCooldown(nil, channels[0].Id, modelName)
+	assert.True(t, cooling)
+}
+
+func TestRelaySendsLastChunkBeforeInterruptionWhenStreamBreaksAfterOutput(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("chat-stream-tail")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+	twoChunks := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"A段\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"B段\"}}]}\n\n"
+
+	w, _ := runOpenAIRelay(t, modelName, channels[0], true, func(string) upstreamReply {
+		return upstreamReply{status: http.StatusOK, stream: true, body: twoChunks, broken: true}
+	})
+
+	body := w.Body.String()
+	require.Contains(t, body, "A段")
+	require.Contains(t, body, "B段")
+	assert.Less(t, strings.Index(body, "B段"), strings.Index(body, "upstream_stream_error"))
+}
+
+func TestRelayRetriesChatStreamWhoseFirstChunkIsUnparsable(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("chat-stream-garbage")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+
+	w, hosts := runOpenAIRelay(t, modelName, channels[0], true, func(host string) upstreamReply {
+		if host == "channel-9700.test" {
+			return upstreamReply{status: http.StatusOK, stream: true, body: "data: <html>502 Bad Gateway</html>\n\n"}
+		}
+		return upstreamReply{status: http.StatusOK, stream: true, body: chatOKStream}
+	})
+
+	assert.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, hosts)
+	assert.Contains(t, w.Body.String(), "备用渠道")
+	assert.NotContains(t, w.Body.String(), "<html>")
+}

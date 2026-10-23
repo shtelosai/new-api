@@ -151,6 +151,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 	var upstreamErr *types.NewAPIError
 	failedAfterCommit := false
+	sawFinish := false
+	lastForwarded := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
@@ -162,6 +164,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					commit(sr)
 				}
 			}
+			lastForwarded = true
+		}
+		if !committed && !streamChunkParsable(data) {
+			// 还没回复就收到解析不了的内容：按上游故障换渠道，不当成已回复。
+			upstreamErr = types.NewOpenAIError(fmt.Errorf("unparsable upstream stream chunk"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+			sr.Stop(upstreamErr)
+			return
+		}
+		if strings.Contains(data, `"finish_reason":"`) {
+			sawFinish = true
 		}
 		if oaiErr := streamChunkError(data); oaiErr != nil {
 			if !committed {
@@ -182,6 +194,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 
 			lastStreamData = data
+			lastForwarded = false
 			if err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount); err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
 				sr.Error(err)
@@ -192,7 +205,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if upstreamErr != nil {
 		return nil, upstreamErr
 	}
-	brokenStream := streamEndedAbnormally(info)
+	// 上游超时、读流出错，或正常断开却始终没给结束标记（[DONE] / finish_reason），都算这次回复没完成。
+	brokenStream := streamEndedAbnormally(info) || (gate && !sawFinish && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF)
 	if !committed {
 		if brokenStream {
 			return nil, types.NewOpenAIError(fmt.Errorf("upstream stream broke before any output: %s", info.StreamStatus.Summary()), types.ErrorCodeBadResponse, http.StatusBadGateway)
@@ -202,8 +216,20 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 	if failedAfterCommit || (committed && brokenStream) {
-		// 写出正文后断流或报错：按已收到的内容结算，不补成功收尾，客户端会按断流续写。
+		// 写出正文后断流或报错：先补发还没发出的最后一段，再发断流错误帧（客户端据 upstream_stream_error 续写），
+		// 不补成功收尾；用量优先取上游最后一段里的真实值。
 		common.SetContextKey(c, constant.ContextKeyUpstreamFailedAfterCommit, true)
+		if !failedAfterCommit {
+			if !lastForwarded && lastStreamData != "" {
+				_ = HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+			writeStreamInterrupted(c, info)
+		}
+		ignoredSend := false
+		if err := handleLastResponse(lastStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,
+			&containStreamUsage, info, &ignoredSend); err != nil {
+			logger.LogError(c, "error handling last response after stream failure: "+err.Error())
+		}
 		if !containStreamUsage {
 			usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 			usage.CompletionTokens += toolCount * 7

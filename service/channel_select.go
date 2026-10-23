@@ -143,8 +143,8 @@ func getRandomSatisfiedChannelSkippingSoftCooldown(param *RetryParam, group stri
 		if !cooling {
 			return channel, localExcludedChannelIds, earliestExpiresAt, nil
 		}
-		if earliestExpiresAt.IsZero() || entry.ExpiresAt.Before(earliestExpiresAt) {
-			earliestExpiresAt = entry.ExpiresAt
+		if earliestExpiresAt.IsZero() || entry.AvailableAt().Before(earliestExpiresAt) {
+			earliestExpiresAt = entry.AvailableAt()
 			earliestChannel = channel
 			earliestEntry = entry
 		}
