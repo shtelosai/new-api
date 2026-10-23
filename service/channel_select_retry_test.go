@@ -239,6 +239,8 @@ func TestCacheGetRandomSatisfiedChannelReportsAllCandidatesCooling(t *testing.T)
 
 	param := newRetrySelectionParam(modelName)
 	param.UseSoftFailureCooldown = true
+	// 本请求已经放行过一次最早到期的渠道，这里只看全部冷却的报告。
+	common.SetContextKey(param.Ctx, constant.ContextKeyCoolingFallbackUsed, true)
 	allCoolingBefore := readCounterValue(t, channelSoftFailover.WithLabelValues(SoftFailoverOutcomeAllCooling))
 	firstSkippedBefore := readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3261"))
 	secondSkippedBefore := readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3262"))
@@ -254,6 +256,44 @@ func TestCacheGetRandomSatisfiedChannelReportsAllCandidatesCooling(t *testing.T)
 	assert.Equal(t, allCoolingBefore+1, readCounterValue(t, channelSoftFailover.WithLabelValues(SoftFailoverOutcomeAllCooling)))
 	assert.Equal(t, firstSkippedBefore+1, readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3261")))
 	assert.Equal(t, secondSkippedBefore+1, readCounterValue(t, channelSoftCooldownSkipped.WithLabelValues("3262")))
+}
+
+func TestCacheGetRandomSatisfiedChannelTriesEarliestCoolingChannelOnce(t *testing.T) {
+	cleanServiceTokenRoutingTables(t)
+	previousMemoryCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousMemoryCacheEnabled })
+	setupChannelSoftCooldownTest(t, true, 30)
+	modelName := "retry-cooling-fallback"
+	seedRetryChannel(t, 3271, modelName, 10)
+	seedRetryChannel(t, 3272, modelName, 10)
+	model.InitChannelCache()
+	now := time.Now()
+	for channelID, expiresAt := range map[int]time.Time{
+		3271: now.Add(5 * time.Second),
+		3272: now.Add(2 * time.Second),
+	} {
+		cleanupChannelSoftCooldownKey(t, channelID, modelName)
+		require.NoError(t, getChannelSoftCooldownCache().SetWithTTL(
+			fmt.Sprintf("%d:%s", channelID, modelName),
+			ChannelSoftCooldownEntry{ExpiresAt: expiresAt, StatusCode: 529, ErrorClass: "overloaded"},
+			30*time.Second,
+		))
+	}
+
+	param := newRetrySelectionParam(modelName)
+	param.UseSoftFailureCooldown = true
+	// 候选全在冷却：先放行最早到期的那个试一次。
+	channel, _, err := CacheGetRandomSatisfiedChannel(param)
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, 3272, channel.Id)
+
+	// 它也失败后不再放行第二个，照旧报告全部冷却。
+	param.ExcludeChannel(channel.Id)
+	channel, _, err = CacheGetRandomSatisfiedChannel(param)
+	assert.Nil(t, channel)
+	require.ErrorIs(t, err, ErrAllChannelsCooling)
 }
 
 func TestAllChannelsCoolingErrorRetryAfterUsesEarliestExpiry(t *testing.T) {

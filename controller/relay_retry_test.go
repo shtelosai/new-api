@@ -373,7 +373,8 @@ func TestShouldRetryTaskRelayDoesNotRetryAfterClientCancel(t *testing.T) {
 	require.False(t, shouldRetryTaskRelay(c, 1, err, 1))
 }
 
-func TestRelayAttemptLimitOnlyExpandsClaudeWhenSoftCooldownEnabled(t *testing.T) {
+// 2026-10-23 起冷却与切换覆盖所有协议，限流/过载的扩展预算不再只给 Claude。
+func TestRelayAttemptLimitExpandsAllFormatsWhenSoftCooldownEnabled(t *testing.T) {
 	healthSetting := operation_setting.GetChannelHealthSetting()
 	originalSetting := *healthSetting
 	originalRetryTimes := common.RetryTimes
@@ -390,7 +391,8 @@ func TestRelayAttemptLimitOnlyExpandsClaudeWhenSoftCooldownEnabled(t *testing.T)
 
 	healthSetting.SoftFailureCooldownEnabled = true
 	require.Equal(t, 5, relayAttemptLimit(c, types.RelayFormatClaude))
-	require.Equal(t, 1, relayAttemptLimit(c, types.RelayFormatOpenAIResponses))
+	require.Equal(t, 5, relayAttemptLimit(c, types.RelayFormatOpenAIResponses))
+	require.Equal(t, 5, relayAttemptLimit(c, types.RelayFormatOpenAI))
 
 	c.Set(string(constant.ContextKeyTokenSpecificChannelId), "42")
 	require.Equal(t, 1, relayAttemptLimit(c, types.RelayFormatClaude))
@@ -468,10 +470,14 @@ func TestRecordChannelSoftCooldownForRelayHonorsRoutingBoundaries(t *testing.T) 
 		setup       func(*gin.Context)
 		enabled     bool
 		wantCooling bool
+		wantClass   string
 	}{
 		{name: "claude soft error", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: softErr, enabled: true, wantCooling: true},
 		{name: "feature disabled", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: softErr, enabled: false},
-		{name: "non claude", relayFormat: types.RelayFormatOpenAIResponses, info: &relaycommon.RelayInfo{}, err: softErr, enabled: true},
+		// 2026-10-23 起所有协议、所有渠道侧故障都冷却；请求本身的问题不冷却。
+		{name: "non claude", relayFormat: types.RelayFormatOpenAIResponses, info: &relaycommon.RelayInfo{}, err: softErr, enabled: true, wantCooling: true},
+		{name: "request error", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: types.WithOpenAIError(types.OpenAIError{
+			Message: "prompt is too long", Type: "invalid_request_error"}, http.StatusBadRequest), enabled: true},
 		{name: "specific channel", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: softErr, enabled: true, setup: func(c *gin.Context) {
 			c.Set(string(constant.ContextKeyTokenSpecificChannelId), "42")
 		}},
@@ -481,7 +487,7 @@ func TestRecordChannelSoftCooldownForRelayHonorsRoutingBoundaries(t *testing.T) 
 			c.Request = c.Request.WithContext(requestCtx)
 			cancel()
 		}},
-		{name: "hard error", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: hardErr, enabled: true},
+		{name: "hard error", relayFormat: types.RelayFormatClaude, info: &relaycommon.RelayInfo{}, err: hardErr, enabled: true, wantCooling: true, wantClass: "unknown"},
 	}
 
 	for i, tt := range tests {
@@ -500,8 +506,12 @@ func TestRecordChannelSoftCooldownForRelayHonorsRoutingBoundaries(t *testing.T) 
 			entry, cooling := service.GetChannelSoftCooldown(c, channelID, modelName)
 			require.Equal(t, tt.wantCooling, cooling)
 			if tt.wantCooling {
-				require.Equal(t, "rate_limit", entry.ErrorClass)
-				require.Equal(t, http.StatusTooManyRequests, entry.StatusCode)
+				wantClass := tt.wantClass
+				if wantClass == "" {
+					wantClass = "rate_limit"
+				}
+				require.Equal(t, wantClass, entry.ErrorClass)
+				require.Equal(t, tt.err.StatusCode, entry.StatusCode)
 			}
 		})
 	}

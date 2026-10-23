@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
@@ -42,6 +43,7 @@ func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
 		useSoftFailureCooldown := false
+		selectedByRouting := false
 		channelId, ok := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId)
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {
@@ -192,7 +194,9 @@ func Distribute() func(c *gin.Context) {
 				}
 				var selectGroup string
 				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
-				useSoftFailureCooldown = operation_setting.IsSoftFailureCooldownEnabled() && c.Request.URL.Path == "/v1/messages" || service.TworkResponsesFailoverEnabled(c)
+				// 所有协议都跳过冷却中的渠道（固定渠道请求不走这条分支）。
+				useSoftFailureCooldown = operation_setting.IsSoftFailureCooldownEnabled()
+				selectedByRouting = true
 				// check path is /pg/chat/completions
 				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
 					playgroundRequest := &dto.PlayGroundRequest{}
@@ -294,7 +298,13 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 					if channel == nil {
-						abortWithUpstreamUnavailable(c, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}))
+						message := i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model})
+						if !model.ModelHasConfiguredChannels(usingGroup, routeModelName, c.GetInt(string(constant.ContextKeyTokenId)), policy.ModelRoute) {
+							// 没授权或模型不存在：保留明确提示，不说成繁忙让用户白等。
+							abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
+							return
+						}
+						abortWithUpstreamUnavailable(c, message)
 						return
 					}
 				}
@@ -302,16 +312,40 @@ func Distribute() func(c *gin.Context) {
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		// 选路挑中的渠道自身配置出错（如没有可用密钥）：冷却它换一个，最多换 3 次。
+		for skipped := map[int]struct{}{}; setupErr != nil && selectedByRouting && useSoftFailureCooldown && len(skipped) < 3; {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("channel #%d setup failed, trying another: %s", channel.Id, setupErr.Error()))
+			service.RecordChannelFailureCooldown(c, channel.Id, modelRequest.Model, http.StatusServiceUnavailable, "channel_setup")
+			skipped[channel.Id] = struct{}{}
+			next, _, selectErr := service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
+				Ctx:                    c,
+				ModelName:              modelRequest.Model,
+				TokenGroup:             common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+				RequestPath:            c.Request.URL.Path,
+				TokenId:                c.GetInt(string(constant.ContextKeyTokenId)),
+				Retry:                  common.GetPointer(0),
+				ExcludedChannelIds:     skipped,
+				UseSoftFailureCooldown: true,
+			})
+			if selectErr != nil || next == nil {
+				break
+			}
+			channel = next
+			setupErr = SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		}
 		if (imageRoute || explicitRoute || policy.ModelRoute || employeeRoute) && setupErr != nil {
 			abortWithUpstreamUnavailable(c, setupErr.Error())
 			return
 		}
 		c.Next()
-		if policy.ModelRoute {
+		if _, relayed := c.Get(string(constant.ContextKeyTworkRelaySucceeded)); relayed && (policy.ModelRoute || useSoftFailureCooldown) {
+			// 走过 Relay 换渠道循环：会话粘到这次真正成功的渠道（换过渠道就粘到新的那个）。
 			if common.GetContextKeyBool(c, constant.ContextKeyTworkRelaySucceeded) {
 				service.RecordChannelAffinity(c, common.GetContextKeyInt(c, constant.ContextKeyChannelId))
 			}
-		} else if useSoftFailureCooldown {
+		} else if policy.ModelRoute {
+			// 模型级选路只认 Relay 的成功标记。
+		} else if useSoftFailureCooldown && c.Request.URL.Path == "/v1/messages" {
 			if channel != nil && c.Writer != nil && common.GetContextKeyBool(c, constant.ContextKeyClaudeRelaySucceeded) {
 				service.RecordChannelAffinity(c, channel.Id)
 			}

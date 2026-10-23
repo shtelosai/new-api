@@ -74,6 +74,14 @@ const (
 	ContextKeyClaudeStreamCommitted  ContextKey = "claude_stream_committed"
 	ContextKeyClaudeRelaySucceeded   ContextKey = "claude_relay_succeeded"
 
+	// OpenAI Chat 流同样缓冲首段：首段就是上游错误时还没写给客户端，可以换渠道。
+	ContextKeyOpenAIStreamGateActive ContextKey = "openai_stream_gate_active"
+	ContextKeyOpenAIStreamCommitted  ContextKey = "openai_stream_committed"
+	// 已经写出正文后上游才报错：按渠道故障记冷却，但这次回复不能重来。
+	ContextKeyUpstreamFailedAfterCommit ContextKey = "upstream_failed_after_commit"
+	// 选路时所有候选都在冷却，本次已经放行过一个最早到期的渠道试一次。
+	ContextKeyCoolingFallbackUsed ContextKey = "cooling_fallback_used"
+
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit
 	// fallback in authHelper (finishAdminAudit) skips its record to avoid

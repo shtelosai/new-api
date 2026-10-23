@@ -146,6 +146,22 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			IncludeRuleName:       true,
 			UserAgentInclude:      nil,
 		},
+		{
+			// 兜底：上面没覆盖的模型与协议（Auto、DeepSeek、通义等）按会话粘到同一渠道；放最后，不改变已有规则的保持时长。
+			Name:       "twork session",
+			ModelRegex: []string{"^.+$"},
+			PathRegex:  []string{"^/v1/(messages|responses|chat/completions)$"},
+			KeySources: []ChannelAffinityKeySource{
+				{Type: "request_header", Key: "X-Twork-Session"},
+				{Type: "gjson", Path: "prompt_cache_key"},
+				{Type: "gjson", Path: "metadata.user_id"},
+			},
+			TTLSeconds:         0,
+			SkipRetryOnFailure: false,
+			IncludeUsingGroup:  true,
+			IncludeModelName:   true,
+			IncludeRuleName:    true,
+		},
 	},
 }
 

@@ -80,6 +80,8 @@ type ChannelSoftCooldownEntry struct {
 	StatusCode       int       `json:"status_code"`
 	ErrorClass       string    `json:"error_class"`
 	ProbeAfterExpiry bool      `json:"probe_after_expiry,omitempty"`
+	// 连续冷却的次数：冷却期内再失败不加，冷却到期后试探又失败才加；试探成功会删掉整条记录。
+	Strikes int `json:"strikes,omitempty"`
 }
 
 func init() {
@@ -279,11 +281,16 @@ func getChannelSoftCooldownCache() *cachex.HybridCache[ChannelSoftCooldownEntry]
 }
 
 func RecordChannelSoftCooldown(c *gin.Context, channelID int, modelName string, statusCode int, errorClass string) {
+	RecordChannelFailureCooldown(c, channelID, modelName, statusCode, errorClass)
+}
+
+// RecordChannelFailureCooldown 记一次渠道×模型冷却，返回连续冷却次数（缓存不可用时为 0）。
+func RecordChannelFailureCooldown(c *gin.Context, channelID int, modelName string, statusCode int, errorClass string) int {
 	if !operation_setting.IsSoftFailureCooldownEnabled() {
-		return
+		return 0
 	}
 	if softCooldownCacheCircuitOpen(c) {
-		return
+		return 0
 	}
 
 	seconds := operation_setting.GetSoftFailureCooldownSeconds()
@@ -291,14 +298,23 @@ func RecordChannelSoftCooldown(c *gin.Context, channelID int, modelName string, 
 	now := time.Now()
 	errorClass = classifyChannelSoftCooldownError(statusCode, errorClass)
 	entry := ChannelSoftCooldownEntry{
-		ProbeAfterExpiry: TworkResponsesFailoverEnabled(c),
+		ProbeAfterExpiry: ChannelFailoverEligible(c),
 		ExpiresAt:        now.Add(ttl),
 		StatusCode:       statusCode,
 		ErrorClass:       errorClass,
+		Strikes:          1,
 	}
 	key := fmt.Sprintf("%d:%s", channelID, modelName)
 	ctx, cancel := channelSoftCooldownCacheContext(c)
 	defer cancel()
+	if ctx.Err() != nil {
+		// 请求已取消：不额外读缓存，下面的写入照常报告取消。
+	} else if previous, found, err := getChannelSoftCooldownCache().GetWithContext(ctx, key); err == nil && found && previous.Strikes > 0 {
+		entry.Strikes = previous.Strikes
+		if !previous.ExpiresAt.After(now) {
+			entry.Strikes++
+		}
+	}
 	cacheTTL := ttl
 	if entry.ProbeAfterExpiry {
 		cacheTTL += 24 * time.Hour
@@ -313,15 +329,16 @@ func RecordChannelSoftCooldown(c *gin.Context, channelID int, modelName string, 
 		responsesRecoveryMutex.Unlock()
 	}
 	if err != nil && channelSoftCooldownRequestCanceled(c, err) {
-		return
+		return 0
 	}
 	recordSoftCooldownAppliedForLog(c, seconds, errorClass, err != nil)
 	if err != nil {
 		channelSoftCooldownCacheErrors.WithLabelValues("set").Inc()
 		common.SysError(fmt.Sprintf("channel soft cooldown cache set failed: err=%v", err))
-		return
+		return 0
 	}
 	channelSoftCooldownApplied.WithLabelValues(strconv.Itoa(channelID), errorClass).Inc()
+	return entry.Strikes
 }
 
 func GetChannelSoftCooldown(c *gin.Context, channelID int, modelName string) (entry ChannelSoftCooldownEntry, cooling bool) {
@@ -349,7 +366,7 @@ func GetChannelSoftCooldown(c *gin.Context, channelID int, modelName string) (en
 		return ChannelSoftCooldownEntry{}, false
 	}
 	if !entry.ExpiresAt.After(time.Now()) {
-		if entry.ProbeAfterExpiry && TworkResponsesFailoverEnabled(c) && !allowResponsesRecoveryProbe(c, key, entry) {
+		if entry.ProbeAfterExpiry && ChannelFailoverEligible(c) && !allowResponsesRecoveryProbe(c, key, entry) {
 			entry.ExpiresAt = time.Now().Add(responsesRecoveryProbeInterval)
 			return entry, true
 		}

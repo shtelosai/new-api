@@ -306,7 +306,8 @@ func TestDistributeSoftCooldownDisabledKeepsClaudeAffinity(t *testing.T) {
 	assertAffinityStillPointsToForRequest(t, "/v1/messages", body, modelName, "default", 4211)
 }
 
-func TestDistributeNonClaudeRequestIgnoresSoftCooldown(t *testing.T) {
+// 2026-10-23 起所有协议都绕开冷却中的渠道，粘住的渠道在冷却也改走下一个。
+func TestDistributeNonClaudeRequestSkipsCoolingAffinityChannel(t *testing.T) {
 	setupDistributorTokenAffinityDB(t)
 	setupDistributorSoftCooldown(t, true, 30)
 	modelName := "gpt-5"
@@ -321,8 +322,12 @@ func TestDistributeNonClaudeRequestIgnoresSoftCooldown(t *testing.T) {
 
 	selected := requestDistributedChannel(t, 0, "default", affinityKey, http.StatusUnavailableForLegalReasons)
 
-	assert.Equal(t, 4221, selected)
-	assertAffinityStillPointsTo(t, modelName, "default", affinityKey, 4221)
+	assert.Equal(t, 4222, selected)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":"%s","prompt_cache_key":"%s"}`, modelName, affinityKey)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	_, found := service.GetPreferredChannelByAffinity(ctx, modelName, "default")
+	assert.False(t, found, "冷却中的旧绑定应清掉，等这次成功后再绑新渠道")
 }
 
 func TestDistributeClaudeSoftCooldownDoesNotRecordAffinityWithoutRelaySuccess(t *testing.T) {
@@ -430,6 +435,8 @@ func TestDistributeAllClaudeChannelsCoolingReturnsRetryAfter(t *testing.T) {
 	router.Use(func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+		// 本请求已用掉「全部冷却时试最早到期渠道」的那一次，这里只看全部冷却的回包。
+		common.SetContextKey(c, constant.ContextKeyCoolingFallbackUsed, true)
 	})
 	router.Use(Distribute())
 	router.POST("/v1/messages", func(c *gin.Context) {

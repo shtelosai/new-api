@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
@@ -88,6 +89,8 @@ func TestGetChannelPreservesLastUpstreamErrorWhenRemainingCandidatesCooling(t *t
 	service.RecordChannelSoftCooldown(nil, 9401, modelName, 529, "overloaded_error")
 
 	ctx := newRetryTestContext()
+	// 本请求已用掉「全部冷却时试最早到期渠道」的那一次。
+	common.SetContextKey(ctx, constant.ContextKeyCoolingFallbackUsed, true)
 	lastError := types.NewOpenAIError(
 		errors.New("upstream overloaded before retry selection"),
 		types.ErrorCodeBadResponseStatusCode,

@@ -111,3 +111,22 @@ func GetTworkRoutedChannel(ctx context.Context, group, modelName string, tokenID
 	}
 	return chooseChannelByWeight(candidates[:end])
 }
+
+// ModelHasConfiguredChannels 判断这个令牌/分组下该模型是否配过渠道（不管现在是否被禁用、冷却）。
+// 一个都没配说明没授权或模型不存在，要给明确提示；配过但都不可用才算「繁忙」。
+func ModelHasConfiguredChannels(group, modelName string, tokenID int, modelRoute bool) bool {
+	if modelName == "" {
+		return false
+	}
+	if modelRoute {
+		return len(LoadTokenModelChannels(tokenID, modelName)) > 0
+	}
+	if group == "auto" {
+		return true
+	}
+	var count int64
+	if err := DB.Model(&Ability{}).Where(&Ability{Group: group, Model: modelName}).Count(&count).Error; err != nil {
+		return true
+	}
+	return count > 0
+}

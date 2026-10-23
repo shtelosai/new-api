@@ -30,10 +30,11 @@ func abortWithOpenAiMessage(c *gin.Context, statusCode int, message string, code
 
 // abortWithUpstreamUnavailable 选不出可用渠道时回统一的友好文案，原因只记日志。
 func abortWithUpstreamUnavailable(c *gin.Context, reason string) {
+	c.Header("X-Should-Retry", "false")
 	c.JSON(http.StatusServiceUnavailable, gin.H{
 		"error": gin.H{
 			"message": common.MessageWithRequestId(service.UpstreamUnavailableMessage, c.GetString(common.RequestIdKey)),
-			"type":    "new_api_error",
+			"type":    string(types.ErrorCodeUpstreamUnavailable),
 			"code":    string(types.ErrorCodeUpstreamUnavailable),
 		},
 	})

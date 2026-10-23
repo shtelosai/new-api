@@ -188,10 +188,11 @@ func TestResponsesExhaustionPreservesLastErrorAndThenSkipsAllCooling(t *testing.
 	assert.NotContains(t, w.Body.String(), "failed upstream")
 	assert.Len(t, hosts, 3)
 	hosts = nil
+	// 全部在冷却：先放行最早到期的那一个试一次，还失败才回繁忙。
 	w = requestResponsesFailover(router, name, "exhausted", false)
 	assert.Equal(t, 503, w.Code)
-	assert.NotEmpty(t, w.Header().Get("Retry-After"))
-	assert.Empty(t, hosts)
+	assert.Contains(t, w.Body.String(), service.UpstreamUnavailableMessage)
+	assert.Len(t, hosts, 1)
 }
 
 func TestResponsesTransientFailureDoesNotPersistDisable(t *testing.T) {

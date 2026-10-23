@@ -53,7 +53,7 @@ func TestProcessChannelErrorIncludesSoftCooldownAdminInfo(t *testing.T) {
 		Code:    "rate_limit_error",
 	}, http.StatusTooManyRequests)
 
-	processChannelError(ctx, *types.NewChannelError(9361, 1, "soft-cooldown-error-log", false, "", false), relayErr)
+	processChannelError(ctx, *types.NewChannelError(9361, 1, "soft-cooldown-error-log", false, "", false), relayErr, 0)
 
 	var log model.Log
 	require.NoError(t, db.Where("type = ?", model.LogTypeError).First(&log).Error)

@@ -123,12 +123,37 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
+	// 可切换渠道的请求缓冲首段：首段就是上游错误时还没写给客户端，交回外层换渠道。
+	gate := service.ChannelFailoverEligible(c)
+	if gate {
+		common.SetContextKey(c, constant.ContextKeyOpenAIStreamGateActive, true)
+		common.SetContextKey(c, constant.ContextKeyOpenAIStreamCommitted, false)
+	}
+	forwarded := false
+	markForwarded := func() {
+		if gate && !forwarded {
+			common.SetContextKey(c, constant.ContextKeyOpenAIStreamCommitted, true)
+		}
+		forwarded = true
+	}
+	var upstreamErr *types.NewAPIError
+
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
+			markForwarded()
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog("error handling stream format: " + err.Error())
 				sr.Error(err)
 			}
+		}
+		if oaiErr := streamChunkError(data); oaiErr != nil {
+			if gate && !forwarded {
+				upstreamErr = types.WithOpenAIError(*oaiErr, http.StatusBadGateway)
+				sr.Stop(upstreamErr)
+				return
+			}
+			// 已写出正文后才报错：这次回复不能重来，但要按渠道故障记下来。
+			common.SetContextKey(c, constant.ContextKeyUpstreamFailedAfterCommit, true)
 		}
 		if len(data) > 0 {
 			// 对音频模型，保存倒数第二个stream data
@@ -143,6 +168,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 	})
+
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
+	if gate && !forwarded && lastStreamData == "" {
+		return nil, types.NewError(fmt.Errorf("upstream stream ended without any content"), types.ErrorCodeEmptyResponse)
+	}
 
 	// 对音频模型，从倒数第二个stream data中提取usage信息
 	if isAudioModel && secondLastStreamData != "" {
@@ -171,6 +203,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		if shouldSendLastResp {
+			markForwarded()
 			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
 	}
@@ -218,7 +251,8 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+		// 上游回 200 但内容是错误：按上游故障处理，才能换渠道。
+		return nil, types.WithOpenAIError(*oaiError, upstreamErrorStatus(resp.StatusCode))
 	}
 
 	for _, choice := range simpleResponse.Choices {

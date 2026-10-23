@@ -44,7 +44,7 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 		{name: "正文输出后不重复请求", prefix: `data: {"type":"response.output_text.delta","delta":"已输出正文"}` + "\n\n", wantCalls: 1},
 		{name: "思考文本输出后不重复请求", prefix: `data: {"type":"response.reasoning_summary_text.delta","delta":"已输出思考"}` + "\n\n", wantCalls: 1},
 		{name: "工具调用输出后不重复请求", prefix: `data: {"type":"response.output_item.added","item":{"id":"fc_test","type":"function_call","name":"read_note","call_id":"call_test","arguments":""}}` + "\n\n", wantCalls: 1},
-		{name: "全部超并发时保留最后错误", allFail: true, wantCalls: 3},
+		{name: "全部超并发时回统一繁忙提示", allFail: true, wantCalls: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var requestContext *gin.Context
@@ -89,7 +89,13 @@ func TestResponsesConcurrencyFailureAfterHeartbeat(t *testing.T) {
 				assert.Contains(t, w.Body.String(), "备用渠道成功")
 				assert.Contains(t, w.Body.String(), "response.completed")
 				assert.NotContains(t, w.Body.String(), "gateway_concurrency_limit")
+			} else if tc.allFail {
+				// 只发过心跳、渠道都失败：流内回统一繁忙提示，不透传上游原文。
+				assert.NotContains(t, w.Body.String(), "备用渠道成功")
+				assert.Contains(t, w.Body.String(), service.UpstreamUnavailableMessage)
+				assert.NotContains(t, w.Body.String(), "gateway_concurrency_limit")
 			} else {
+				// 已写出正文：保留原错误码，客户端据此判断能否续写。
 				assert.NotContains(t, w.Body.String(), "备用渠道成功")
 				assert.Contains(t, w.Body.String(), "gateway_concurrency_limit")
 				assert.Contains(t, w.Body.String(), `data: {"code":`)

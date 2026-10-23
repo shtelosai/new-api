@@ -72,7 +72,7 @@ func TestProcessChannelErrorDisablesOriginalModelFromRelay(t *testing.T) {
 		Code:    "invalid_api_key",
 	}, http.StatusUnauthorized)
 
-	processChannelError(c, *types.NewChannelError(9101, 1, "relay-health-channel", false, "", true), err)
+	processChannelError(c, *types.NewChannelError(9101, 1, "relay-health-channel", false, "", true), err, 0)
 
 	require.Eventually(t, func() bool {
 		disabled, lookupErr := model.IsChannelModelDisabled(9101, "f3-relay-model")
@@ -100,7 +100,7 @@ func TestProcessChannelErrorSkipsModelDisableWhenOriginalModelEmpty(t *testing.T
 		Code:    "invalid_api_key",
 	}, http.StatusUnauthorized)
 
-	processChannelError(c, *types.NewChannelError(9102, 1, "relay-health-channel", false, "", true), err)
+	processChannelError(c, *types.NewChannelError(9102, 1, "relay-health-channel", false, "", true), err, 0)
 
 	var count int64
 	require.NoError(t, model.DB.Model(&model.ChannelModelDisabled{}).Count(&count).Error)

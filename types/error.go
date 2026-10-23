@@ -59,6 +59,8 @@ const (
 	ErrorCodeChannelAwsClientError        ErrorCode = "channel:aws_client_error"
 	ErrorCodeChannelInvalidKey            ErrorCode = "channel:invalid_key"
 	ErrorCodeChannelResponseTimeExceeded  ErrorCode = "channel:response_time_exceeded"
+	// 渠道适配器不支持这次请求的协议：换个渠道就可能成功。
+	ErrorCodeChannelUnsupportedProtocol ErrorCode = "channel:unsupported_protocol"
 
 	// client request error
 	ErrorCodeReadRequestBodyFailed ErrorCode = "read_request_body_failed"

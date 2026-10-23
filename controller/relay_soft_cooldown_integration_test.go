@@ -420,7 +420,8 @@ func TestDistributeRelaySoftFailureFailoverRebindsAffinity(t *testing.T) {
 	assert.Equal(t, true, softCooldown["applied"])
 	assert.Equal(t, "overloaded", softCooldown["reason_class"])
 	assert.Equal(t, false, softCooldown["cache_degraded"])
-	assert.Equal(t, false, softCooldown["affinity_cleared"])
+	// 失败渠道的会话绑定先清掉，成功后改绑到新渠道。
+	assert.Equal(t, true, softCooldown["affinity_cleared"])
 	assert.Equal(t, appliedBefore+1, gatheredCounterValue(t, "newapi_channel_soft_cooldown_applied_total", map[string]string{
 		"channel_id":  "9700",
 		"error_class": "overloaded",
