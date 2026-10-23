@@ -386,11 +386,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					service.RecordAffinityClearedForLog(c)
 				}
 			}
+			// 上游已正常完成就确认恢复：客户端读到结尾即断开很常见（桌面端就是），不能因此让试探一直不算成功。
+			if useSoftFailureCooldown && !failedAfterCommit {
+				service.CompleteResponsesRecovery(c, channel.Id, relayInfo.OriginModelName)
+			}
 			if !relayRequestContextDone(c) && !failedAfterCommit {
 				common.SetContextKey(c, constant.ContextKeyTworkRelaySucceeded, true)
-				if useSoftFailureCooldown {
-					service.CompleteResponsesRecovery(c, channel.Id, relayInfo.OriginModelName)
-				}
 			}
 			if relayFormat == types.RelayFormatClaude && !relayRequestContextDone(c) && !failedAfterCommit {
 				common.SetContextKey(c, constant.ContextKeyClaudeRelaySucceeded, true)

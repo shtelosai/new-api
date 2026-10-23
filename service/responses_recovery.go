@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -69,7 +70,8 @@ func CompleteResponsesRecovery(c *gin.Context, channelID int, modelName string) 
 	if probe.Key != fmt.Sprintf("%d:%s", channelID, modelName) {
 		return
 	}
-	ctx, cancel := channelSoftCooldownCacheContext(c)
+	// 客户端可能已断开，确认恢复不能跟着请求一起被取消。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), channelSoftCooldownCacheTimeout)
 	defer cancel()
 	var err error
 	if common.RedisEnabled && common.RDB != nil {
@@ -85,9 +87,6 @@ return 0`
 			err = getChannelSoftCooldownCache().SetWithTTLContext(ctx, probe.Key, ChannelSoftCooldownEntry{}, time.Nanosecond)
 		}
 		responsesRecoveryMutex.Unlock()
-	}
-	if err != nil && channelSoftCooldownRequestCanceled(c, err) {
-		return
 	}
 	if err != nil {
 		recordSoftCooldownCacheAccessForLog(c, true)

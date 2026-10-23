@@ -106,12 +106,15 @@ func TestResponsesRecoveryProbeAndNewerFailures(t *testing.T) {
 			expired := ChannelSoftCooldownEntry{ExpiresAt: time.Now().Add(-time.Second), StatusCode: 503, ProbeAfterExpiry: true}
 			require.NoError(t, getChannelSoftCooldownCache().SetWithTTL(key, expired, time.Hour))
 			first := newResponsesFailoverContext()
+			clientContext, clientGone := context.WithCancel(context.Background())
+			first.Request = first.Request.WithContext(clientContext)
 			_, cooling := GetChannelSoftCooldown(first, id, name)
 			require.False(t, cooling, "首个请求可以试探")
 			_, cooling = GetChannelSoftCooldown(newResponsesFailoverContext(), id, name)
 			assert.True(t, cooling, "其他请求继续避开试探中的渠道")
 			_, cooling = GetChannelSoftCooldown(newResponsesFailoverContext(), id, name+"-other")
 			assert.False(t, cooling)
+			clientGone() // 客户端读完结尾就断开，仍要确认恢复
 			CompleteResponsesRecovery(first, id, name)
 			_, cooling = GetChannelSoftCooldown(newResponsesFailoverContext(), id, name)
 			assert.False(t, cooling, "成功试探后恢复")

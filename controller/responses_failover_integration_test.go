@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"github.com/bytedance/gopkg/util/gopool"
 	"io"
@@ -221,4 +222,63 @@ func TestResponsesTransientFailureDoesNotPersistDisable(t *testing.T) {
 	assert.Zero(t, count, "临时故障不能写入永久禁用表")
 	_, cooling := service.GetChannelSoftCooldown(nil, channels[0].Id, name)
 	assert.True(t, cooling)
+}
+
+// 读到结尾就关闭客户端连接，模拟桌面端读完 [DONE] 立即断开。
+type closeClientAtEOF struct {
+	io.Reader
+	clientGone context.CancelFunc
+}
+
+func (b closeClientAtEOF) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	if err == io.EOF {
+		b.clientGone()
+	}
+	return n, err
+}
+
+func (closeClientAtEOF) Close() error { return nil }
+
+func TestResponsesProbeRecoversWhenClientDisconnectsAfterEnd(t *testing.T) {
+	var hosts []string
+	broken := true
+	var clientGone context.CancelFunc
+	router, name, _ := setupResponsesFailoverTest(t, relayRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		hosts = append(hosts, req.URL.Host)
+		status, body := 200, `{"id":"ok","object":"response","status":"completed","output":[],"usage":{"input_tokens":0,"output_tokens":0}}`
+		if req.URL.Host == "channel-9700.test" && broken {
+			status, body = 503, `{"error":{"type":"server_error","message":"upstream service error"}}`
+		}
+		var reader io.ReadCloser = io.NopCloser(strings.NewReader(body))
+		if clientGone != nil {
+			reader = closeClientAtEOF{Reader: strings.NewReader(body), clientGone: clientGone}
+		}
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: reader, Request: req}, nil
+	}))
+	operation_setting.GetChannelHealthSetting().SoftFailureCooldownSeconds = 1
+	require.Equal(t, 200, requestResponsesFailover(router, name, "probe-a", false).Code)
+	require.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, hosts)
+	broken = false
+	time.Sleep(1100 * time.Millisecond)
+
+	send := func(session string, disconnect bool) []string {
+		hosts = nil
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"hello","store":false,"prompt_cache_key":%q,"stream":false}`, name, session)))
+		if disconnect {
+			var ctx context.Context
+			ctx, clientGone = context.WithCancel(context.Background())
+			req = req.WithContext(ctx)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for key, value := range map[string]string{"X-Twork-Client-Version": "4.0.0", "X-Twork-Client-Capabilities": "model-routes-v3", "X-Twork-Route-Mode": "model", "X-Twork-Agent-Runtime": "pi", "X-Twork-Wire-Api": "responses"} {
+			req.Header.Set(key, value)
+		}
+		router.ServeHTTP(httptest.NewRecorder(), req)
+		clientGone = nil
+		return hosts
+	}
+	assert.Equal(t, []string{"channel-9700.test"}, send("probe-b", true), "冷却到期放一个请求试探")
+	// 试探成功后应立即恢复原优先级；没确认的话试探名额还占着，新会话会被挤到备用渠道。
+	assert.Equal(t, []string{"channel-9700.test"}, send("probe-c", false), "试探成功后新会话回到最高优先级")
 }
