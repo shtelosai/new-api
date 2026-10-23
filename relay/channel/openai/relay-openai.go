@@ -123,37 +123,57 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
-	// 可切换渠道的请求缓冲首段：首段就是上游错误时还没写给客户端，交回外层换渠道。
+	// 可切换渠道的请求先缓冲没有实际内容的首段（角色、空增量）：在出现正文、思考、工具或结束标记之前出错或断流，
+	// 客户端什么都没收到，交回外层换渠道；之后才出错则发出错误帧、不发成功收尾，由客户端续写。
 	gate := service.ChannelFailoverEligible(c)
 	if gate {
 		common.SetContextKey(c, constant.ContextKeyOpenAIStreamGateActive, true)
 		common.SetContextKey(c, constant.ContextKeyOpenAIStreamCommitted, false)
 	}
-	forwarded := false
-	markForwarded := func() {
-		if gate && !forwarded {
-			common.SetContextKey(c, constant.ContextKeyOpenAIStreamCommitted, true)
+	committed := !gate
+	var pending []string
+	forward := func(chunk string, sr *helper.StreamResult) {
+		if err := HandleStreamFormat(c, info, chunk, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+			common.SysLog("error handling stream format: " + err.Error())
+			sr.Error(err)
 		}
-		forwarded = true
+	}
+	commit := func(sr *helper.StreamResult) {
+		if committed {
+			return
+		}
+		committed = true
+		common.SetContextKey(c, constant.ContextKeyOpenAIStreamCommitted, true)
+		for _, chunk := range pending {
+			forward(chunk, sr)
+		}
+		pending = nil
 	}
 	var upstreamErr *types.NewAPIError
+	failedAfterCommit := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
-			markForwarded()
-			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-				common.SysLog("error handling stream format: " + err.Error())
-				sr.Error(err)
+			if committed {
+				forward(lastStreamData, sr)
+			} else {
+				pending = append(pending, lastStreamData)
+				if streamChunkHasOutput(lastStreamData) {
+					commit(sr)
+				}
 			}
 		}
 		if oaiErr := streamChunkError(data); oaiErr != nil {
-			if gate && !forwarded {
+			if !committed {
 				upstreamErr = types.WithOpenAIError(*oaiErr, http.StatusBadGateway)
 				sr.Stop(upstreamErr)
 				return
 			}
-			// 已写出正文后才报错：这次回复不能重来，但要按渠道故障记下来。
-			common.SetContextKey(c, constant.ContextKeyUpstreamFailedAfterCommit, true)
+			// 已写出正文后才报错：这次回复不能重来。原样发出错误帧（不走普通增量转换），不发成功收尾。
+			failedAfterCommit = true
+			writeStreamErrorAfterCommit(c, info, data, oaiErr)
+			sr.Stop(nil)
+			return
 		}
 		if len(data) > 0 {
 			// 对音频模型，保存倒数第二个stream data
@@ -172,8 +192,32 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if upstreamErr != nil {
 		return nil, upstreamErr
 	}
-	if gate && !forwarded && lastStreamData == "" {
-		return nil, types.NewError(fmt.Errorf("upstream stream ended without any content"), types.ErrorCodeEmptyResponse)
+	brokenStream := streamEndedAbnormally(info)
+	if !committed {
+		if brokenStream {
+			return nil, types.NewOpenAIError(fmt.Errorf("upstream stream broke before any output: %s", info.StreamStatus.Summary()), types.ErrorCodeBadResponse, http.StatusBadGateway)
+		}
+		if lastStreamData == "" && len(pending) == 0 {
+			return nil, types.NewError(fmt.Errorf("upstream stream ended without any content"), types.ErrorCodeEmptyResponse)
+		}
+	}
+	if failedAfterCommit || (committed && brokenStream) {
+		// 写出正文后断流或报错：按已收到的内容结算，不补成功收尾，客户端会按断流续写。
+		common.SetContextKey(c, constant.ContextKeyUpstreamFailedAfterCommit, true)
+		if !containStreamUsage {
+			usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+			usage.CompletionTokens += toolCount * 7
+		}
+		applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
+		return usage, nil
+	}
+	if len(pending) > 0 {
+		// 正常结束但一直没有实际内容（如只有角色与结束标记）：照原样补发缓冲的分段。
+		for _, chunk := range pending {
+			_ = HandleStreamFormat(c, info, chunk, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+		}
+		pending = nil
+		common.SetContextKey(c, constant.ContextKeyOpenAIStreamCommitted, true)
 	}
 
 	// 对音频模型，从倒数第二个stream data中提取usage信息
@@ -203,7 +247,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		if shouldSendLastResp {
-			markForwarded()
 			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
 	}

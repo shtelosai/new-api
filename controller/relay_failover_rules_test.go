@@ -28,6 +28,18 @@ type upstreamReply struct {
 	status int
 	stream bool
 	body   string
+	// broken：读完 body 后连接异常中断（不是正常结束）。
+	broken bool
+}
+
+type brokenReader struct{ data io.Reader }
+
+func (r *brokenReader) Read(p []byte) (int, error) {
+	n, err := r.data.Read(p)
+	if err == io.EOF {
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, err
 }
 
 const chatOKBody = `{"id":"chatcmpl-ok","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"备用渠道成功"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
@@ -83,7 +95,11 @@ func runOpenAIRelay(t *testing.T, modelName string, firstChannel *model.Channel,
 		if r.stream {
 			contentType = "text/event-stream"
 		}
-		return &http.Response{StatusCode: r.status, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(strings.NewReader(r.body)), Request: req}, nil
+		var body io.Reader = strings.NewReader(r.body)
+		if r.broken {
+			body = &brokenReader{data: body}
+		}
+		return &http.Response{StatusCode: r.status, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(body), Request: req}, nil
 	})
 	t.Cleanup(func() { httpClient.Transport = originalTransport })
 
@@ -165,9 +181,11 @@ func TestRelayCoolsChannelWhenChatStreamFailsAfterOutput(t *testing.T) {
 		return upstreamReply{status: http.StatusOK, stream: true, body: partial}
 	})
 
-	// 已写出正文不能重来，只试一个渠道；但这个渠道要按故障冷却。
+	// 已写出正文不能重来，只试一个渠道；但这个渠道要按故障冷却。客户端收到错误帧而不是成功收尾，才会续写。
 	assert.Equal(t, []string{"channel-9700.test"}, hosts)
 	assert.Contains(t, w.Body.String(), "写了一半")
+	assert.Contains(t, w.Body.String(), "upstream dropped")
+	assert.NotContains(t, w.Body.String(), "[DONE]")
 	_, cooling := service.GetChannelSoftCooldown(nil, channels[0].Id, modelName)
 	assert.True(t, cooling)
 }
@@ -253,4 +271,113 @@ func TestShouldDisableAfterRelayFailureEscalatesOnlyAfterRepeatedCooldowns(t *te
 	// 明确坏掉的直接禁用；请求本身的问题从不禁用渠道。
 	assert.True(t, shouldDisableAfterRelayFailure(c, authErr, 1))
 	assert.False(t, shouldDisableAfterRelayFailure(c, requestErr, 5))
+}
+
+// 上一次尝试留下的流闸门标记不能影响这次：这次已写出正文就不能再换渠道。
+func TestRelayOutputCommittedOnlyLooksAtCurrentAttempt(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	_, _ = c.Writer.Write([]byte(": PING\n\n"))
+	common.SetContextKey(c, constant.ContextKeyOpenAIStreamGateActive, true)
+	common.SetContextKey(c, constant.ContextKeyOpenAIStreamCommitted, false)
+	assert.False(t, relayOutputCommitted(c))
+
+	resetAttemptStreamState(c)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamGateActive, true)
+	common.SetContextKey(c, constant.ContextKeyClaudeStreamCommitted, true)
+	assert.True(t, relayOutputCommitted(c))
+}
+
+func TestRelayRetriesChatStreamWhenErrorFollowsRoleOnlyChunk(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("chat-stream-role-then-error")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+	roleThenError := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n" +
+		"data: {\"error\":{\"message\":\"upstream overloaded\",\"type\":\"server_error\"}}\n\n"
+
+	w, hosts := runOpenAIRelay(t, modelName, channels[0], true, func(host string) upstreamReply {
+		if host == "channel-9700.test" {
+			return upstreamReply{status: http.StatusOK, stream: true, body: roleThenError}
+		}
+		return upstreamReply{status: http.StatusOK, stream: true, body: chatOKStream}
+	})
+
+	// 只有角色、没有正文的首段不算已回复，照样换渠道。
+	assert.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, hosts)
+	assert.Contains(t, w.Body.String(), "备用渠道")
+	assert.NotContains(t, w.Body.String(), "upstream overloaded")
+}
+
+func TestRelaySkippedBrokenChannelDoesNotConsumeAttemptBudget(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("chat-skip-budget")
+	// RetryTimes=1：普通故障最多试 2 个渠道；配置出错跳过的那个不算。
+	channels := setupRelaySoftCooldownChannels(t, modelName, 3, 1, 5)
+	useOpenAIChannels(t, channels, false)
+	var broken model.Channel
+	require.NoError(t, model.DB.First(&broken, channels[1].Id).Error)
+	broken.Key = ""
+	broken.ChannelInfo.IsMultiKey = true
+	require.NoError(t, model.DB.Save(&broken).Error)
+	model.InitChannelCache()
+
+	w, hosts := runOpenAIRelay(t, modelName, channels[0], false, func(host string) upstreamReply {
+		if host == "channel-9700.test" {
+			return upstreamReply{status: http.StatusBadGateway, body: `{"error":{"message":"bad gateway","type":"upstream_error"}}`}
+		}
+		return upstreamReply{status: http.StatusOK, body: chatOKBody}
+	})
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{"channel-9700.test", "channel-9702.test"}, hosts)
+}
+
+func TestRelayDoesNotRetryUserCausedErrorWrappedAsServerError(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("chat-user-error-500")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+
+	w, hosts := runOpenAIRelay(t, modelName, channels[0], false, func(string) upstreamReply {
+		return upstreamReply{status: http.StatusInternalServerError, body: `{"error":{"message":"messages: tool_use ids must be unique","type":"invalid_request_error"}}`}
+	})
+
+	// 请求本身不合法：换渠道也一样，不换，原样告诉用户。
+	assert.Equal(t, []string{"channel-9700.test"}, hosts)
+	assert.Contains(t, w.Body.String(), "tool_use ids must be unique")
+}
+
+func TestRelayRetriesChatStreamBrokenBeforeOutput(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("chat-stream-broken-early")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+	roleOnly := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"
+
+	w, hosts := runOpenAIRelay(t, modelName, channels[0], true, func(host string) upstreamReply {
+		if host == "channel-9700.test" {
+			return upstreamReply{status: http.StatusOK, stream: true, body: roleOnly, broken: true}
+		}
+		return upstreamReply{status: http.StatusOK, stream: true, body: chatOKStream}
+	})
+
+	assert.Equal(t, []string{"channel-9700.test", "channel-9701.test"}, hosts)
+	assert.Contains(t, w.Body.String(), "备用渠道")
+}
+
+func TestRelayDoesNotFinishChatStreamBrokenAfterOutput(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("chat-stream-broken-late")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+	partial := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"写了一半\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"又一段\"}}]}\n\n"
+
+	w, hosts := runOpenAIRelay(t, modelName, channels[0], true, func(string) upstreamReply {
+		return upstreamReply{status: http.StatusOK, stream: true, body: partial, broken: true}
+	})
+
+	// 出过正文才断：不重来、不补成功收尾，客户端按断流续写；渠道记冷却。
+	assert.Equal(t, []string{"channel-9700.test"}, hosts)
+	assert.Contains(t, w.Body.String(), "写了一半")
+	assert.NotContains(t, w.Body.String(), "[DONE]")
+	_, cooling := service.GetChannelSoftCooldown(nil, channels[0].Id, modelName)
+	assert.True(t, cooling)
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -123,4 +124,48 @@ func TestFixedChannelRequestsAreNotFailoverEligible(t *testing.T) {
 	assert.True(t, ChannelFailoverEligible(c))
 	common.SetContextKey(c, constant.ContextKeyTworkExplicitChannelRoute, true)
 	assert.False(t, ChannelFailoverEligible(c), "用户指定了具体渠道，只走那个渠道")
+}
+
+func TestIsChannelSideFailureHonorsStructuredChannelMarkersOn400(t *testing.T) {
+	// 有的上游用 400 回「没开通该模型 / 密钥无效」：仍是渠道的问题，而且明确坏掉。
+	notEnabled := types.WithOpenAIError(types.OpenAIError{Message: "model not available", Type: "invalid_request_error", Code: "model_not_found"}, http.StatusBadRequest)
+	assert.True(t, IsChannelSideFailure(notEnabled))
+	assert.True(t, IsHardChannelFailure(notEnabled))
+	badKey := types.WithOpenAIError(types.OpenAIError{Message: "bad key", Type: "invalid_request_error", Code: "invalid_api_key"}, http.StatusBadRequest)
+	assert.True(t, IsHardChannelFailure(badKey))
+}
+
+func TestCoolingFallbackSharesProbeLeaseAcrossRequests(t *testing.T) {
+	setupChannelSoftCooldownTest(t, true, 30)
+	const channelID = 92101
+	const modelName = "fallback-lease"
+	cleanupChannelSoftCooldownKey(t, channelID, modelName)
+	key := fmt.Sprintf("%d:%s", channelID, modelName)
+	RecordChannelFailureCooldown(nil, channelID, modelName, 502, "upstream_error")
+	entry, found, err := getChannelSoftCooldownCache().Get(key)
+	require.NoError(t, err)
+	require.True(t, found)
+
+	newCtx := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		return c
+	}
+	first, second := newCtx(), newCtx()
+	// 全冷却时同一渠道同一时刻只放一个请求过去。
+	assert.True(t, claimCoolingFallback(first, key, entry))
+	assert.False(t, claimCoolingFallback(second, key, entry))
+
+	// 放行的这次试探失败：哪怕还在冷却期内也算新的一次。
+	assert.Equal(t, 2, RecordChannelFailureCooldown(first, channelID, modelName, 502, "upstream_error"))
+}
+
+func TestModelHasConfiguredChannelsAcrossAutoGroups(t *testing.T) {
+	setupChannelSoftCooldownTest(t, true, 30)
+	cleanServiceTokenRoutingTables(t)
+	require.NoError(t, model.DB.Create(&model.Ability{Group: "vip", Model: "configured-model", ChannelId: 1, Enabled: false}).Error)
+	assert.True(t, model.ModelHasConfiguredChannels("auto", "configured-model", 0, false))
+	assert.True(t, model.ModelHasConfiguredChannels("vip", "configured-model", 0, false), "禁用中的渠道也算配过")
+	assert.False(t, model.ModelHasConfiguredChannels("default", "configured-model", 0, false))
+	assert.False(t, model.ModelHasConfiguredChannels("auto", "never-configured-model", 0, false))
 }

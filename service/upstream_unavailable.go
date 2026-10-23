@@ -87,19 +87,45 @@ func IsChannelSideFailure(err *types.NewAPIError) bool {
 		_, ok := localChannelFailureCodes[err.GetErrorCode()]
 		return ok
 	}
+	oai := err.ToOpenAIError()
+	errType := normalizeModelHealthText(oai.Type)
+	errCode := normalizeModelHealthText(openAIErrorCodeToString(oai.Code))
+	text := normalizeModelHealthText(strings.Join([]string{errType, errCode, oai.Message, err.Error()}, " "))
+	if containsAnyModelHealthFragment(text, requestSpecificFailureFragments) {
+		return false
+	}
+	// 渠道鉴权失败、没开通该模型：有的上游用 400 回，也是渠道的问题。
+	if hasHardChannelMarker(errType, errCode) {
+		return true
+	}
 	switch err.StatusCode {
 	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
 		return false
 	}
-	oai := err.ToOpenAIError()
-	errType := normalizeModelHealthText(oai.Type)
-	errCode := normalizeModelHealthText(openAIErrorCodeToString(oai.Code))
 	// Claude 流内错误一律包成 500，非法请求要按结构化类型认；模型不存在属于渠道没开通，不算非法请求。
-	if errType == "invalid_request_error" && err.StatusCode != http.StatusNotFound && errCode != "model_not_found" {
+	return !(errType == "invalid_request_error" && err.StatusCode != http.StatusNotFound)
+}
+
+func hasHardChannelMarker(errType, errCode string) bool {
+	if _, ok := hardChannelFailureTypes[errType]; ok {
+		return true
+	}
+	switch errCode {
+	case "model_not_found", "invalid_api_key", "account_deactivated", "billing_not_active":
+		return true
+	}
+	return false
+}
+
+// ChannelCooldownStrikesBeforeDisable 连续冷却这么多次仍失败，转为系统禁用，交给定时探测恢复。
+const ChannelCooldownStrikesBeforeDisable = 3
+
+// ShouldEscalateChannelFailure 可切换请求的渠道故障：明确坏掉，或连续冷却到次数，转系统禁用；一次 500 只冷却。
+func ShouldEscalateChannelFailure(err *types.NewAPIError, strikes int) bool {
+	if !common.AutomaticDisableChannelEnabled || !IsChannelSideFailure(err) {
 		return false
 	}
-	text := normalizeModelHealthText(strings.Join([]string{errType, errCode, oai.Message, err.Error()}, " "))
-	return !containsAnyModelHealthFragment(text, requestSpecificFailureFragments)
+	return IsHardChannelFailure(err) || strikes >= ChannelCooldownStrikesBeforeDisable
 }
 
 // 渠道明确坏掉（鉴权、欠费、没开通该模型），等冷却也不会好。
@@ -134,12 +160,5 @@ func IsHardChannelFailure(err *types.NewAPIError) bool {
 		return true
 	}
 	oai := err.ToOpenAIError()
-	if _, ok := hardChannelFailureTypes[normalizeModelHealthText(oai.Type)]; ok {
-		return true
-	}
-	switch normalizeModelHealthText(openAIErrorCodeToString(oai.Code)) {
-	case "model_not_found", "invalid_api_key", "account_deactivated", "billing_not_active":
-		return true
-	}
-	return false
+	return hasHardChannelMarker(normalizeModelHealthText(oai.Type), normalizeModelHealthText(openAIErrorCodeToString(oai.Code)))
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/bytedance/gopkg/util/gopool"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -316,7 +317,11 @@ func Distribute() func(c *gin.Context) {
 		// 选路挑中的渠道自身配置出错（如没有可用密钥）：冷却它换一个，最多换 3 次。
 		for skipped := map[int]struct{}{}; setupErr != nil && selectedByRouting && useSoftFailureCooldown && len(skipped) < 3; {
 			logger.LogError(c.Request.Context(), fmt.Sprintf("channel #%d setup failed, trying another: %s", channel.Id, setupErr.Error()))
-			service.RecordChannelFailureCooldown(c, channel.Id, modelRequest.Model, http.StatusServiceUnavailable, "channel_setup")
+			strikes := service.RecordChannelFailureCooldown(c, channel.Id, modelRequest.Model, http.StatusServiceUnavailable, "channel_setup")
+			if channel.GetAutoBan() && service.ShouldEscalateChannelFailure(setupErr, strikes) {
+				channelID, reason := channel.Id, setupErr.ErrorWithStatusCode()
+				gopool.Go(func() { service.DisableChannelModelFromRelay(channelID, modelRequest.Model, reason) })
+			}
 			skipped[channel.Id] = struct{}{}
 			next, _, selectErr := service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
 				Ctx:                    c,
@@ -334,7 +339,7 @@ func Distribute() func(c *gin.Context) {
 			channel = next
 			setupErr = SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		}
-		if (imageRoute || explicitRoute || policy.ModelRoute || employeeRoute) && setupErr != nil {
+		if (imageRoute || explicitRoute || policy.ModelRoute || employeeRoute || selectedByRouting) && setupErr != nil {
 			abortWithUpstreamUnavailable(c, setupErr.Error())
 			return
 		}

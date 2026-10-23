@@ -80,8 +80,47 @@ type ChannelSoftCooldownEntry struct {
 	StatusCode       int       `json:"status_code"`
 	ErrorClass       string    `json:"error_class"`
 	ProbeAfterExpiry bool      `json:"probe_after_expiry,omitempty"`
-	// 连续冷却的次数：冷却期内再失败不加，冷却到期后试探又失败才加；试探成功会删掉整条记录。
+	// 连续冷却的次数：冷却期内再失败不加，冷却到期或放行试探后又失败才加；试探成功会删掉整条记录。
 	Strikes int `json:"strikes,omitempty"`
+	// 到期时间的毫秒数，供 Redis 脚本原子比较。
+	ExpiresAtMs int64 `json:"expires_at_ms,omitempty"`
+}
+
+// 读旧次数、算新次数、写入在 Redis 里一步完成，并发失败与试探确认不会互相覆盖。
+const recordCooldownStrikesScript = `local current = redis.call('GET', KEYS[1])
+local strikes = 1
+if current then
+  local ok, previous = pcall(cjson.decode, current)
+  if ok and type(previous) == 'table' and tonumber(previous.strikes or 0) > 0 then
+    strikes = tonumber(previous.strikes)
+    if ARGV[3] == '1' or tonumber(previous.expires_at_ms or 0) <= tonumber(ARGV[2]) then strikes = strikes + 1 end
+  end
+end
+local value = string.gsub(ARGV[1], '"strikes":%-1', '"strikes":' .. strikes)
+redis.call('SET', KEYS[1], value, 'PX', ARGV[4])
+return strikes`
+
+// nextCooldownStrikes 冷却期内再失败沿用次数；到期后或本请求就是放行的试探，失败才算新的一次。
+func nextCooldownStrikes(previous ChannelSoftCooldownEntry, now time.Time, probing bool) int {
+	if previous.Strikes <= 0 {
+		return 1
+	}
+	if probing || !previous.ExpiresAt.After(now) {
+		return previous.Strikes + 1
+	}
+	return previous.Strikes
+}
+
+func isRecoveryProbeFor(c *gin.Context, key string) bool {
+	if c == nil {
+		return false
+	}
+	value, ok := c.Get(responsesRecoveryProbeContextKey)
+	if !ok {
+		return false
+	}
+	probe, ok := value.(responsesRecoveryProbe)
+	return ok && probe.Key == key
 }
 
 func init() {
@@ -300,6 +339,7 @@ func RecordChannelFailureCooldown(c *gin.Context, channelID int, modelName strin
 	entry := ChannelSoftCooldownEntry{
 		ProbeAfterExpiry: ChannelFailoverEligible(c),
 		ExpiresAt:        now.Add(ttl),
+		ExpiresAtMs:      now.Add(ttl).UnixMilli(),
 		StatusCode:       statusCode,
 		ErrorClass:       errorClass,
 		Strikes:          1,
@@ -307,25 +347,32 @@ func RecordChannelFailureCooldown(c *gin.Context, channelID int, modelName strin
 	key := fmt.Sprintf("%d:%s", channelID, modelName)
 	ctx, cancel := channelSoftCooldownCacheContext(c)
 	defer cancel()
-	if ctx.Err() != nil {
-		// 请求已取消：不额外读缓存，下面的写入照常报告取消。
-	} else if previous, found, err := getChannelSoftCooldownCache().GetWithContext(ctx, key); err == nil && found && previous.Strikes > 0 {
-		entry.Strikes = previous.Strikes
-		if !previous.ExpiresAt.After(now) {
-			entry.Strikes++
-		}
-	}
 	cacheTTL := ttl
 	if entry.ProbeAfterExpiry {
 		cacheTTL += 24 * time.Hour
 	}
-	// 本地恢复确认与新故障写入串行，防止旧试探清掉新故障。
-	localCache := !common.RedisEnabled || common.RDB == nil
-	if localCache {
+	probing := isRecoveryProbeFor(c, key)
+	var err error
+	if common.RedisEnabled && common.RDB != nil {
+		entry.Strikes = -1 // 由脚本替换成实际次数
+		var raw string
+		if raw, err = (cachex.JSONCodec[ChannelSoftCooldownEntry]{}).Encode(entry); err == nil {
+			probeFlag := "0"
+			if probing {
+				probeFlag = "1"
+			}
+			entry.Strikes, err = common.RDB.Eval(ctx, recordCooldownStrikesScript, []string{getChannelSoftCooldownCache().FullKey(key)},
+				raw, now.UnixMilli(), probeFlag, cacheTTL.Milliseconds()).Int()
+		}
+	} else {
+		// 本地：读、算、写与恢复确认在同一把锁里，防止旧试探清掉新故障或并发覆盖次数。
 		responsesRecoveryMutex.Lock()
-	}
-	err := getChannelSoftCooldownCache().SetWithTTLContext(ctx, key, entry, cacheTTL)
-	if localCache {
+		if ctx.Err() == nil {
+			if previous, found, getErr := getChannelSoftCooldownCache().GetWithContext(ctx, key); getErr == nil && found {
+				entry.Strikes = nextCooldownStrikes(previous, now, probing)
+			}
+		}
+		err = getChannelSoftCooldownCache().SetWithTTLContext(ctx, key, entry, cacheTTL)
 		responsesRecoveryMutex.Unlock()
 	}
 	if err != nil && channelSoftCooldownRequestCanceled(c, err) {

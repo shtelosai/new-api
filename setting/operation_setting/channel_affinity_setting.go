@@ -154,7 +154,6 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			KeySources: []ChannelAffinityKeySource{
 				{Type: "request_header", Key: "X-Twork-Session"},
 				{Type: "gjson", Path: "prompt_cache_key"},
-				{Type: "gjson", Path: "metadata.user_id"},
 			},
 			TTLSeconds:         0,
 			SkipRetryOnFailure: false,

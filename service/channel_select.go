@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"time"
@@ -127,9 +128,10 @@ func getRandomSatisfiedChannelSkippingSoftCooldown(param *RetryParam, group stri
 	copiedExclusions := false
 	var earliestExpiresAt time.Time
 	var earliestChannel *model.Channel
+	var earliestEntry ChannelSoftCooldownEntry
 	for {
 		channel, err := param.selectChannel(group, retry, localExcludedChannelIds)
-		if err == nil && channel == nil && earliestChannel != nil && claimCoolingFallback(param.Ctx) {
+		if err == nil && channel == nil && earliestChannel != nil && claimCoolingFallback(param.Ctx, fmt.Sprintf("%d:%s", earliestChannel.Id, param.ModelName), earliestEntry) {
 			// 候选全在冷却：先放行最早到期的那个试一次，还失败才算全部不可用；每个请求只放行一次。
 			return earliestChannel, localExcludedChannelIds, time.Time{}, nil
 		}
@@ -144,6 +146,7 @@ func getRandomSatisfiedChannelSkippingSoftCooldown(param *RetryParam, group stri
 		if earliestExpiresAt.IsZero() || entry.ExpiresAt.Before(earliestExpiresAt) {
 			earliestExpiresAt = entry.ExpiresAt
 			earliestChannel = channel
+			earliestEntry = entry
 		}
 		recordSoftCooldownSkippedChannelForLog(param.Ctx, channel.Id)
 		channelSoftCooldownSkipped.WithLabelValues(strconv.Itoa(channel.Id)).Inc()
@@ -298,9 +301,13 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	return channel, selectGroup, nil
 }
 
-// claimCoolingFallback 只在可切换的请求里放行一次“全部冷却时试最早到期的渠道”。
-func claimCoolingFallback(c *gin.Context) bool {
+// claimCoolingFallback 「全部冷却时试最早到期的渠道」：每个请求最多一次，且要拿到该渠道×模型的试探名额，
+// 同一时刻只放一个请求过去，其余照旧回繁忙；成功清零连续次数，失败算新的一次。
+func claimCoolingFallback(c *gin.Context, key string, entry ChannelSoftCooldownEntry) bool {
 	if !ChannelFailoverEligible(c) || common.GetContextKeyBool(c, constant.ContextKeyCoolingFallbackUsed) {
+		return false
+	}
+	if !allowResponsesRecoveryProbe(c, key, entry) {
 		return false
 	}
 	common.SetContextKey(c, constant.ContextKeyCoolingFallbackUsed, true)

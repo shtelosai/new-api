@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
 // TworkRoutePolicy 是单次请求约束，不改变渠道配置或旧客户端的授权语义。
@@ -126,11 +127,13 @@ func ModelHasConfiguredChannels(group, modelName string, tokenID int, modelRoute
 		}
 		return granted > 0
 	}
-	if group == "auto" {
-		return true
+	names := []string{modelName, ratio_setting.FormatMatchingModelName(modelName)}
+	query := DB.Model(&Ability{}).Where("model IN ?", names)
+	if group != "auto" {
+		query = query.Where(&Ability{Group: group})
 	}
 	var count int64
-	if err := DB.Model(&Ability{}).Where(&Ability{Group: group, Model: modelName}).Count(&count).Error; err != nil {
+	if err := query.Count(&count).Error; err != nil {
 		return true
 	}
 	return count > 0

@@ -73,6 +73,16 @@ func openAIStreamGateActive(c *gin.Context) bool {
 	return common.GetContextKeyBool(c, constant.ContextKeyOpenAIStreamGateActive)
 }
 
+func resetAttemptStreamState(c *gin.Context) {
+	for _, key := range []constant.ContextKey{
+		constant.ContextKeyClaudeStreamGateActive, constant.ContextKeyClaudeStreamCommitted,
+		constant.ContextKeyOpenAIStreamGateActive, constant.ContextKeyOpenAIStreamCommitted,
+		constant.ContextKeyTworkResponsesStreamCommitted, constant.ContextKeyUpstreamFailedAfterCommit,
+	} {
+		common.SetContextKey(c, key, false)
+	}
+}
+
 // relayOutputCommitted 判断是否已经把实际回复写给了客户端；只发过心跳或缓冲中的流不算，还能换渠道。
 func relayOutputCommitted(c *gin.Context) bool {
 	if c == nil || c.Writer == nil || !c.Writer.Written() {
@@ -160,8 +170,15 @@ func recordChannelSoftCooldownForRelay(c *gin.Context, relayFormat types.RelayFo
 	return strikes
 }
 
-// channelCooldownStrikesBeforeDisable 连续冷却这么多次仍失败，转为系统禁用，交给定时探测恢复。
-const channelCooldownStrikesBeforeDisable = 3
+// disableChannelModelAfterFailure 不经 processChannelError 的失败路径（选中渠道配置出错、写出后断流）同样按规则升级禁用。
+func disableChannelModelAfterFailure(c *gin.Context, channel *model.Channel, modelName string, err *types.NewAPIError, strikes int) {
+	if channel == nil || !channel.GetAutoBan() || modelName == "" || !service.ShouldEscalateChannelFailure(err, strikes) {
+		return
+	}
+	reason := err.ErrorWithStatusCode()
+	channelID := channel.Id
+	gopool.Go(func() { service.DisableChannelModelFromRelay(channelID, modelName, reason) })
+}
 
 func recordChannelSoftFailoverTerminalOutcome(c *gin.Context, succeeded bool) {
 	outcome := service.SoftFailoverOutcomeExhausted
@@ -319,7 +336,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if channel != nil && useSoftFailureCooldown && setupSkips < 3 {
 				// 选中的渠道自身配置出错（如没有可用密钥）：冷却它并换下一个，健康的渠道还没试。
 				setupSkips++
-				service.RecordChannelFailureCooldown(c, channel.Id, relayInfo.OriginModelName, http.StatusServiceUnavailable, "channel_setup")
+				strikes := service.RecordChannelFailureCooldown(c, channel.Id, relayInfo.OriginModelName, http.StatusServiceUnavailable, "channel_setup")
+				disableChannelModelAfterFailure(c, channel, relayInfo.OriginModelName, channelErr, strikes)
 				retryParam.ExcludeChannel(channel.Id)
 				if relayInfo.LastError == nil {
 					relayInfo.LastError = channelErr
@@ -343,6 +361,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		// 每次尝试只看自己的流状态：上一次没写出回复才会走到这里，它留下的闸门标记不能影响这次。
+		resetAttemptStreamState(c)
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -359,7 +379,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			relayInfo.LastError = nil
 			failedAfterCommit := common.GetContextKeyBool(c, constant.ContextKeyUpstreamFailedAfterCommit)
 			if failedAfterCommit && useSoftFailureCooldown && !relayRequestContextDone(c) {
-				service.RecordChannelFailureCooldown(c, channel.Id, relayInfo.OriginModelName, http.StatusBadGateway, "stream_error")
+				strikes := service.RecordChannelFailureCooldown(c, channel.Id, relayInfo.OriginModelName, http.StatusBadGateway, "stream_error")
+				disableChannelModelAfterFailure(c, channel, relayInfo.OriginModelName,
+					types.NewOpenAIError(errors.New("upstream stream failed after output"), types.ErrorCodeBadResponse, http.StatusBadGateway), strikes)
 				if service.DeleteCurrentChannelAffinityBinding(c) {
 					service.RecordAffinityClearedForLog(c)
 				}
@@ -396,8 +418,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			effectiveAttemptLimit = attemptLimit
 		}
 		remainingRetries := common.RetryTimes - retryParam.GetRetry()
-		if softModelHealthFailure {
-			remainingRetries = attemptLimit - realAttempts
+		if useSoftFailureCooldown {
+			// 按实际试过的渠道数算预算：普通故障最多 RetryTimes+1 个，限流/过载最多 attemptLimit 个；配置出错跳过的不算。
+			limit := common.RetryTimes + 1
+			if softModelHealthFailure {
+				limit = attemptLimit
+			}
+			remainingRetries = limit - realAttempts
 		}
 		if !shouldRetry(c, newAPIError, remainingRetries) {
 			break
@@ -519,9 +546,10 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if openaiErr == nil {
 		return false
 	}
-	// 只要是渠道的问题就换下一个渠道，不受状态码名单、会话粘性规则或单条错误的跳过标记限制。
-	if service.ChannelFailoverEligible(c) && service.IsChannelSideFailure(openaiErr) {
-		return retryTimes > 0
+	// 可切换请求：只要是渠道的问题就换下一个渠道，不受状态码名单、会话粘性规则或单条错误的跳过标记限制；
+	// 用户自己的问题（积分、权限、请求不合法、上下文超长、内容审核）换渠道也一样，明确不换。
+	if service.ChannelFailoverEligible(c) {
+		return service.IsChannelSideFailure(openaiErr) && retryTimes > 0
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) && !(service.TworkResponsesFailoverEnabled(c) && service.IsRelaySoftFailure(c, openaiErr)) {
 		return false
@@ -565,10 +593,7 @@ const legacyDisableRule = -1
 // 可切换请求的渠道故障先冷却：明确坏掉（鉴权、欠费、没开通）或连续冷却 strikes 次才禁用；一次 500 不再直接禁用。
 func shouldDisableAfterRelayFailure(c *gin.Context, err *types.NewAPIError, strikes int) bool {
 	if strikes != legacyDisableRule && service.ChannelFailoverEligible(c) {
-		if !common.AutomaticDisableChannelEnabled || !service.IsChannelSideFailure(err) {
-			return false
-		}
-		return service.IsHardChannelFailure(err) || strikes >= channelCooldownStrikesBeforeDisable
+		return service.ShouldEscalateChannelFailure(err, strikes)
 	}
 	imageCooling := common.GetContextKeyBool(c, constant.ContextKeyTworkImageRoute) && service.IsTworkImageChannelFailure(err)
 	return service.ShouldDisableChannel(err) && !imageCooling && !(service.TworkResponsesFailoverEnabled(c) && service.IsRelaySoftFailure(c, err))
