@@ -154,10 +154,21 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	sawFinish := false
 	lastForwarded := false
 	var latestUsage *dto.Usage // 接收过程中记下最近一次有效用量，失败收尾时按它结算
+	// 写出后只含用量的分段先扣住：格式转换（如转 Claude）会把它当成结束生成 message_stop；后面真有内容或正常结束再发。
+	var held []string
+	flushHeld := func(sr *helper.StreamResult) {
+		for _, chunk := range held {
+			forward(chunk, sr)
+		}
+		held = nil
+	}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
-			if committed {
+			if committed && gate && isUsageOnlyChunk(lastStreamData) {
+				held = append(held, lastStreamData)
+			} else if committed {
+				flushHeld(sr)
 				forward(lastStreamData, sr)
 			} else {
 				pending = append(pending, lastStreamData)
@@ -224,9 +235,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// 不补成功收尾；用量优先取上游最后一段里的真实值。
 		common.SetContextKey(c, constant.ContextKeyUpstreamFailedAfterCommit, true)
 		if !failedAfterCommit {
-			// 只补发带实际内容的尾段：只有用量或结束标记的分段经格式转换会生成成功终态（如 Claude 的 message_stop）。
-			if !lastForwarded && lastStreamData != "" && streamChunkHasOutput(lastStreamData) && !hasFinishReason(lastStreamData) {
-				_ = HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			// 只补发尾段里的实际内容，去掉结束原因：只有用量或结束标记的分段经格式转换会生成成功终态（如 Claude 的 message_stop）。
+			if !lastForwarded && lastStreamData != "" && streamChunkHasOutput(lastStreamData) {
+				_ = HandleStreamFormat(c, info, withoutFinishReason(lastStreamData), info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 			}
 			writeStreamInterrupted(c, info)
 		}
@@ -239,6 +250,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 		return usage, nil
+	}
+	if len(held) > 0 {
+		// 正常结束：扣住的用量分段按原顺序补发。
+		for _, chunk := range held {
+			_ = HandleStreamFormat(c, info, chunk, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+		}
+		held = nil
 	}
 	if len(pending) > 0 {
 		// 正常结束但一直没有实际内容（如只有角色与结束标记）：照原样补发缓冲的分段。

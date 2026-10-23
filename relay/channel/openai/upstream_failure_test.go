@@ -30,3 +30,11 @@ func TestStreamChunkUsageReadsReportedUsageAnywhereInStream(t *testing.T) {
 		assert.Equal(t, 3, usage.CompletionTokens)
 	}
 }
+
+func TestWithoutFinishReasonKeepsContent(t *testing.T) {
+	out := withoutFinishReason(`{"choices":[{"index":0,"delta":{"content":"B段"},"finish_reason":"stop"}]}`)
+	assert.Contains(t, out, "B段")
+	assert.False(t, hasFinishReason(out))
+	assert.True(t, isUsageOnlyChunk(`{"choices": [ ],"usage":{"total_tokens":1}}`))
+	assert.False(t, isUsageOnlyChunk(`{"choices":[{"delta":{"content":"x"}}],"usage":{"total_tokens":1}}`))
+}

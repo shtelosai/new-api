@@ -112,3 +112,32 @@ func streamChunkUsage(data string) *dto.Usage {
 	}
 	return chunk.Usage
 }
+
+// isUsageOnlyChunk 只带用量、没有任何 choice 的分段（OpenAI 流末尾的用量包）。
+func isUsageOnlyChunk(data string) bool {
+	return strings.Contains(data, `"usage"`) && emptyChoicesPattern.MatchString(data)
+}
+
+var emptyChoicesPattern = regexp.MustCompile(`"choices"\s*:\s*\[\s*\]`)
+
+// withoutFinishReason 去掉分段里的结束原因，保留正文；断流收尾补发尾段时用，避免格式转换生成成功终态。
+func withoutFinishReason(data string) string {
+	if !hasFinishReason(data) {
+		return data
+	}
+	var chunk map[string]any
+	if err := common.UnmarshalJsonStr(data, &chunk); err != nil {
+		return data
+	}
+	choices, _ := chunk["choices"].([]any)
+	for _, item := range choices {
+		if choice, ok := item.(map[string]any); ok {
+			choice["finish_reason"] = nil
+		}
+	}
+	encoded, err := common.Marshal(chunk)
+	if err != nil {
+		return data
+	}
+	return string(encoded)
+}

@@ -464,3 +464,36 @@ func TestRelayClaudeClientNeverSeesSuccessEndBeforeInterruption(t *testing.T) {
 	assert.Contains(t, body, "upstream_stream_error")
 	assert.NotContains(t, body, "message_stop", "断流前不能先给出正常结束")
 }
+
+func TestRelayClaudeClientUsageChunkThenErrorDoesNotEndSuccessfully(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("claude-over-chat-usage-then-error")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+	stream := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"写了一半\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n" +
+		"data: {\"error\":{\"message\":\"upstream dropped\",\"type\":\"server_error\"}}\n\n"
+
+	w, _ := runRelayAgainstOpenAIChannels(t, types.RelayFormatClaude, modelName, channels[0], true, func(string) upstreamReply {
+		return upstreamReply{status: http.StatusOK, stream: true, body: stream}
+	})
+
+	assert.Contains(t, w.Body.String(), "写了一半")
+	assert.NotContains(t, w.Body.String(), "message_stop", "上游报错前不能先给出正常结束")
+}
+
+func TestRelayKeepsTailContentWithFinishReasonWhenStreamBreaks(t *testing.T) {
+	modelName := uniqueRelaySoftCooldownModelName("claude-over-chat-tail-finish")
+	channels := setupRelaySoftCooldownChannels(t, modelName, 2, 3, 5)
+	useOpenAIChannels(t, channels, false)
+	stream := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"A段\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"B段\"},\"finish_reason\":\"stop\"}]}\n\n"
+
+	w, _ := runRelayAgainstOpenAIChannels(t, types.RelayFormatClaude, modelName, channels[0], true, func(string) upstreamReply {
+		return upstreamReply{status: http.StatusOK, stream: true, body: stream, broken: true}
+	})
+
+	body := w.Body.String()
+	assert.Contains(t, body, "B段")
+	assert.Contains(t, body, "upstream_stream_error")
+	assert.NotContains(t, body, "message_stop")
+}
