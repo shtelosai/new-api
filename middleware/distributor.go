@@ -300,7 +300,8 @@ func Distribute() func(c *gin.Context) {
 					if channel == nil {
 						message := i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model})
 						if !model.ModelHasConfiguredChannels(usingGroup, routeModelName, c.GetInt(string(constant.ContextKeyTokenId)), policy.ModelRoute) {
-							// 没授权或模型不存在：保留明确提示，不说成繁忙让用户白等。
+							// 没授权或模型不存在：保留明确提示，不说成繁忙让用户白等；重试也没用。
+							c.Header("X-Should-Retry", "false")
 							abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
 							return
 						}

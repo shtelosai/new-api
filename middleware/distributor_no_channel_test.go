@@ -46,6 +46,7 @@ func TestDistributeKeepsModelNotFoundWhenModelHasNoChannels(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	assert.Contains(t, rec.Body.String(), string(types.ErrorCodeModelNotFound))
 	assert.NotContains(t, rec.Body.String(), service.UpstreamUnavailableMessage)
+	assert.Equal(t, "false", rec.Header().Get("X-Should-Retry"))
 }
 
 // 配过渠道但都被系统禁用：属于渠道故障，回统一繁忙提示，并告诉客户端不用再重试。

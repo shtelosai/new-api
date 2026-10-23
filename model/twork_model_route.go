@@ -119,7 +119,12 @@ func ModelHasConfiguredChannels(group, modelName string, tokenID int, modelRoute
 		return false
 	}
 	if modelRoute {
-		return len(LoadTokenModelChannels(tokenID, modelName)) > 0
+		// 只在选不出渠道时查一次库：授权缓存 30 秒才刷新，刚授权的令牌读缓存会误判成没授权。
+		var granted int64
+		if err := DB.Model(&TokenModelChannel{}).Where("token_id = ? AND model_id = ?", tokenID, modelName).Count(&granted).Error; err != nil {
+			return true
+		}
+		return granted > 0
 	}
 	if group == "auto" {
 		return true
