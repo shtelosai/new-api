@@ -79,6 +79,8 @@ const (
 	ContextKeyOpenAIStreamCommitted  ContextKey = "openai_stream_committed"
 	// 已经写出正文后上游才报错：按渠道故障记冷却，但这次回复不能重来。
 	ContextKeyUpstreamFailedAfterCommit ContextKey = "upstream_failed_after_commit"
+	// 向量响应已完整读取并校验；下游读完即断开不应丢失渠道恢复确认。
+	ContextKeyEmbeddingResponseComplete ContextKey = "embedding_response_complete"
 	// 选路时所有候选都在冷却，本次已经放行过一个最早到期的渠道试一次。
 	ContextKeyCoolingFallbackUsed ContextKey = "cooling_fallback_used"
 

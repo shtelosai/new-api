@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel/openrouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/relayconvert"
@@ -434,6 +435,11 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		responseBody = geminiRespStr
 	}
 
+	// 此时已完整读完、解析并排除上游错误。Nginx/客户端可能在收到
+	// Content-Length 指定的最后一字节后立即断开，须在写出前记录完成事实。
+	if info.RelayMode == relayconstant.RelayModeEmbeddings && c.Request.Context().Err() == nil {
+		common.SetContextKey(c, constant.ContextKeyEmbeddingResponseComplete, true)
+	}
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &simpleResponse.Usage, nil

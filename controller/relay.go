@@ -78,6 +78,7 @@ func resetAttemptStreamState(c *gin.Context) {
 		constant.ContextKeyClaudeStreamGateActive, constant.ContextKeyClaudeStreamCommitted,
 		constant.ContextKeyOpenAIStreamGateActive, constant.ContextKeyOpenAIStreamCommitted,
 		constant.ContextKeyTworkResponsesStreamCommitted, constant.ContextKeyUpstreamFailedAfterCommit,
+		constant.ContextKeyEmbeddingResponseComplete,
 	} {
 		common.SetContextKey(c, key, false)
 	}
@@ -532,6 +533,9 @@ func relayRequestContextDone(c *gin.Context) bool {
 // relayUpstreamFinished 这次上游是否真的完整回完：客户端读到结尾就断开很常见（桌面端就是），
 // 不能因此不确认试探成功、不记新渠道的会话粘性；但客户端中途放弃时上游未必正常，不能据此算成功。
 func relayUpstreamFinished(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	if common.GetContextKeyBool(c, constant.ContextKeyEmbeddingResponseComplete) {
+		return true
+	}
 	if !relayRequestContextDone(c) {
 		return true
 	}
