@@ -250,6 +250,12 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		}
 
 		observeClaudeStreamEvent(claudeInfo, event)
+		// 先记录协议完成，再写出结束帧；客户端读到 message_stop 后可能立即关闭连接。
+		// 已取消或没有有效用量/输出的流不能因排队中的结束帧改记为成功。
+		if event.response.Type == "message_stop" && c.Request.Context().Err() == nil &&
+			(committed || hasBillableClaudeUsage(claudeInfo.Usage) || claudeInfo.HasSemanticOutput) {
+			sr.Done()
+		}
 		if committed {
 			emitClaudeStreamEvent(c, info, claudeInfo, event)
 			return
