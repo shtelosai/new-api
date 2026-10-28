@@ -95,14 +95,16 @@ func TestTworkReasoningSummaryReachesResponsesUpstreamWithoutChangingFixedOrLega
 	}
 
 	for _, arm := range []struct {
-		name, version string
-		modelRoute    bool
-		wantHistory   []any
+		name, version   string
+		modelRoute, omp bool
+		wantHistory     []any
 	}{
-		{"model_pi_one", "1.0.0", true, newHistory},
-		{"model_pi_one_one", "1.1.0", true, newHistory},
-		{"fixed_passthrough", "1.0.0", false, nil},
-		{"model_legacy", "0.85.1", true, legacyHistory},
+		{"model_pi_one", "1.0.0", true, false, newHistory},
+		{"model_pi_one_one", "1.1.0", true, false, newHistory},
+		{"fixed_passthrough", "1.0.0", false, false, nil},
+		{"model_legacy", "0.85.1", true, false, legacyHistory},
+		// OMP 版本号恰与 Pi 1.0 相同且同时带 Pi 头，摘要也不能回放成助手发言。
+		{"model_omp", "1.0.0", true, true, legacyHistory},
 	} {
 		t.Run(arm.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -117,6 +119,13 @@ func TestTworkReasoningSummaryReachesResponsesUpstreamWithoutChangingFixedOrLega
 			c.Request.Header.Set("X-Twork-Wire-Api", "responses")
 			c.Request.Header.Set("X-Twork-Pi-Compatibility-Version", arm.version)
 			common.SetContextKey(c, constant.ContextKeyTworkPiCompatibilityVersion, arm.version)
+			runtime := "pi"
+			if arm.omp {
+				runtime = "omp"
+				c.Request.Header.Set("X-Twork-Agent-Runtime", runtime)
+				c.Request.Header.Set("X-Twork-Omp-Version", arm.version)
+				common.SetContextKey(c, constant.ContextKeyTworkOMPVersion, arm.version)
+			}
 			if arm.modelRoute {
 				c.Request.Header.Set("X-Twork-Route-Mode", "model")
 				common.SetContextKey(c, constant.ContextKeyTworkRouteModel, "fixture-model")
@@ -131,7 +140,7 @@ func TestTworkReasoningSummaryReachesResponsesUpstreamWithoutChangingFixedOrLega
 			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://reasoning-summary.invalid")
 			common.SetContextKey(c, constant.ContextKeyChannelKey, "fixture-only-key")
 			common.SetContextKey(c, constant.ContextKeyOriginalModel, "fixture-model")
-			common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{TworkRuntime: "pi", TworkWireAPI: "responses", PassThroughBodyEnabled: true})
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{TworkRuntime: runtime, TworkWireAPI: "responses", PassThroughBodyEnabled: true})
 			common.SetContextKey(c, constant.ContextKeyChannelParamOverride, map[string]any{})
 			common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, map[string]any{})
 			c.Set("model_mapping", "")

@@ -98,6 +98,44 @@ func TestTworkReasoningSummaryKeepsLegacyVersionHistoryUnchanged(t *testing.T) {
 	}
 }
 
+func TestTworkReasoningSummaryIsNotReplayedAsAssistantTextForOMP(t *testing.T) {
+	// OMP 路由只开放 /v1/responses（不含 compact）；多段摘要、多个推理项都要整项丢弃。
+	for _, version := range []string{"18.12.2", "1.0.0"} {
+		t.Run(version, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			common.SetContextKey(c, constant.ContextKeyTworkOMPVersion, version)
+			common.SetContextKey(c, constant.ContextKeyTworkPiCompatibilityVersion, "1.0.0")
+			c.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{
+				"model":"public-fixture",
+				"input":[
+					{"role":"user","content":"完善报告"},
+					{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"我先核对旧版场景。"}]},
+					{"type":"reasoning","id":"rs_fixture","encrypted_content":"fixture-only-opaque","summary":[{"type":"summary_text","text":"**Designing traceability report**\n\nI need to consider an extraction table."},{"type":"summary_text","text":"**Considering tool policy**\n\nI should edit surgically."}]},
+					{"type":"function_call","id":"fc_fixture","call_id":"call_fixture","name":"eval","arguments":"{}"},
+					{"type":"function_call_output","call_id":"call_fixture","output":"旧版 40 项"},
+					{"type":"reasoning","id":"rs_later","summary":[{"type":"summary_text","text":"**Checking cross-chapter consistency**"}]}
+				]
+			}`))
+			data, err := BuildTworkModelRequest(c, &RelayInfo{ChannelMeta: &ChannelMeta{
+				UpstreamModelName: "mapped-fixture",
+				ChannelSetting:    dto.ChannelSettings{TworkRuntime: "omp", TworkWireAPI: "responses"},
+			}})
+			require.NoError(t, err)
+			for _, leaked := range []string{"Designing traceability report", "Considering tool policy", "Checking cross-chapter consistency", "fixture-only-opaque"} {
+				assert.NotContains(t, string(data), leaked)
+			}
+			var body map[string]any
+			require.NoError(t, common.Unmarshal(data, &body))
+			assert.Equal(t, []any{
+				map[string]any{"role": "user", "content": "完善报告"},
+				map[string]any{"type": "message", "role": "assistant", "phase": "commentary", "content": []any{map[string]any{"type": "output_text", "text": "我先核对旧版场景。"}}},
+				map[string]any{"type": "function_call", "call_id": "call_fixture", "name": "eval", "arguments": "{}"},
+				map[string]any{"type": "function_call_output", "call_id": "call_fixture", "output": "旧版 40 项"},
+			}, body["input"])
+		})
+	}
+}
+
 func TestTworkReasoningSummaryPreservesCompactFieldBoundaryForPiOne(t *testing.T) {
 	body := buildTworkReasoningSummaryFixture(t, "1.0.0", "/v1/responses/compact", `{
 		"model":"public-fixture","instructions":"压缩指令","store":true,"stream":true,

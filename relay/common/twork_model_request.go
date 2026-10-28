@@ -51,8 +51,9 @@ func BuildTworkModelRequest(c *gin.Context, info *RelayInfo) ([]byte, error) {
 						return nil, errors.New("模型级请求必须携带完整公开历史，不能使用渠道专属历史引用或加密压缩")
 					}
 					if item["type"] == "reasoning" {
-						// 新版保留可移植的明文摘要；渠道签名、密文及恢复状态仍不回放。
-						if version == "1.0.0" || version == "1.1.0" || dto.IsTworkOMPCompatibilityVersion(version) {
+						// Pi 1.0 / 1.1 保留可移植的明文摘要；渠道签名、密文及恢复状态仍不回放。
+						// OMP 不回放：摘要改写成助手发言后，模型会把它当成自己对用户说过的话，长任务里照样把英文思考写进正文。
+						if version == "1.0.0" || version == "1.1.0" {
 							summary, _ := item["summary"].([]any)
 							for _, entry := range summary {
 								part, ok := entry.(map[string]any)
