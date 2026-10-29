@@ -209,16 +209,18 @@ func OpenAIChatRequestToClaudeMessages(c *gin.Context, textRequest dto.GeneralOp
 		}
 	}
 
-	if textRequest.Stop != nil {
-		switch stop := textRequest.Stop.(type) {
-		case string:
-			claudeRequest.StopSequences = []string{stop}
-		case []interface{}:
-			stopSequences := make([]string, 0)
-			for _, item := range stop {
-				stopSequences = append(stopSequences, item.(string))
+	// stop 允许字符串或字符串数组；兼容混合 JSON 数组时忽略非字符串，避免断言 panic。
+	switch stop := textRequest.Stop.(type) {
+	case string:
+		claudeRequest.StopSequences = []string{stop}
+	case []string:
+		claudeRequest.StopSequences = stop
+	case []any:
+		claudeRequest.StopSequences = make([]string, 0, len(stop))
+		for _, item := range stop {
+			if sequence, ok := item.(string); ok {
+				claudeRequest.StopSequences = append(claudeRequest.StopSequences, sequence)
 			}
-			claudeRequest.StopSequences = stopSequences
 		}
 	}
 
@@ -226,6 +228,7 @@ func OpenAIChatRequestToClaudeMessages(c *gin.Context, textRequest dto.GeneralOp
 	lastMessage := dto.Message{
 		Role: "tool",
 	}
+	lastMessageHasPlaceholder := false
 	for i, message := range textRequest.Messages {
 		if message.Role == "" {
 			textRequest.Messages[i].Role = "user"
@@ -242,15 +245,32 @@ func OpenAIChatRequestToClaudeMessages(c *gin.Context, textRequest dto.GeneralOp
 		}
 		if lastMessage.Role == message.Role && lastMessage.Role != "tool" {
 			if lastMessage.IsStringContent() && message.IsStringContent() {
-				fmtMessage.SetStringContent(strings.Trim(fmt.Sprintf("%s %s", lastMessage.StringContent(), message.StringContent()), "\""))
+				previousToolCalls := lastMessage.ParseToolCalls()
+				currentToolCalls := fmtMessage.ParseToolCalls()
+				if len(previousToolCalls) > 0 || len(currentToolCalls) > 0 {
+					// 合并相邻助手消息时保留两侧调用顺序，让后续 tool_result 均有对应 tool_use。
+					texts := make([]string, 0, 2)
+					if previousText := lastMessage.StringContent(); previousText != "" && !(lastMessageHasPlaceholder && len(previousToolCalls) > 0) {
+						texts = append(texts, previousText)
+					}
+					if currentText := message.StringContent(); currentText != "" {
+						texts = append(texts, currentText)
+					}
+					fmtMessage.SetStringContent(strings.Join(texts, " "))
+					fmtMessage.SetToolCalls(append(previousToolCalls, currentToolCalls...))
+				} else {
+					fmtMessage.SetStringContent(strings.Trim(fmt.Sprintf("%s %s", lastMessage.StringContent(), message.StringContent()), "\""))
+				}
 				formatMessages = formatMessages[:len(formatMessages)-1]
 			}
 		}
-		if fmtMessage.Content == nil || (fmtMessage.IsStringContent() && fmtMessage.StringContent() == "") {
+		hasPlaceholder := fmtMessage.Content == nil || (fmtMessage.IsStringContent() && fmtMessage.StringContent() == "")
+		if hasPlaceholder {
 			fmtMessage.SetStringContent("...")
 		}
 		formatMessages = append(formatMessages, fmtMessage)
 		lastMessage = fmtMessage
+		lastMessageHasPlaceholder = hasPlaceholder
 	}
 
 	claudeMessages := make([]dto.ClaudeMessage, 0)
