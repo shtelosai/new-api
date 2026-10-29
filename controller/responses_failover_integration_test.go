@@ -289,12 +289,12 @@ type leaveAfterCompleted struct {
 	clientGone context.CancelFunc
 }
 
-func (w leaveAfterCompleted) Write(p []byte) (int, error) {
-	n, err := w.ResponseRecorder.Write(p)
-	if strings.Contains(string(p), "response.completed") {
+func (w leaveAfterCompleted) Flush() {
+	w.ResponseRecorder.Flush()
+	// 只有完整 data 事件已刷新，才等价于客户端读到终态后断开。
+	if strings.Contains(w.Body.String(), `data: {"type":"response.completed"`) && strings.HasSuffix(w.Body.String(), "\n\n") {
 		w.clientGone()
 	}
-	return n, err
 }
 
 func TestResponsesStreamClientDisconnectAfterEndKeepsRules(t *testing.T) {

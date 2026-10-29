@@ -3,6 +3,7 @@ package helper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,10 +27,8 @@ const (
 	InitialScannerBufferSize    = 64 << 10  // 64KB (64*1024)
 	DefaultMaxScannerBufferSize = 128 << 20 // 64MB (64*1024*1024) default SSE buffer size
 	DefaultPingInterval         = 10 * time.Second
-	// streamWriteTimeout bounds a single blocked write to a slow client so the
-	// unconditional wg.Wait() in cleanup can always finish. Without it, a slow
-	// but connected client (full TCP buffer, no server WriteTimeout) could hang
-	// the handler forever.
+	// StreamWriteBudget 按最低读取速率增加累计排空时间，再留有限的阻塞写入余量，
+	// 避免大事件慢速读取被固定 30 秒截断，同时保证 cleanup 的 wg.Wait 可收敛。
 	streamWriteTimeout = 30 * time.Second
 )
 
@@ -62,16 +61,6 @@ func copyCodexSSEHeaders(c *gin.Context, resp *http.Response) {
 			}
 		}
 	}
-}
-
-// ExtendWriteDeadline pushes the connection write deadline forward before each
-// stream write. Best-effort: writers that don't support deadlines (e.g.
-// httptest recorders) are silently ignored.
-func ExtendWriteDeadline(c *gin.Context) {
-	if c == nil || c.Writer == nil {
-		return
-	}
-	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
@@ -172,7 +161,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					func() {
 						writeMutex.Lock()
 						defer writeMutex.Unlock()
-						ExtendWriteDeadline(c)
 						err = PingData(c)
 					}()
 					if err != nil {
@@ -197,6 +185,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	dataChan := make(chan string, 10)
+	sr := newStreamResult(info.StreamStatus)
 
 	wg.Add(1)
 	gopool.Go(func() {
@@ -208,13 +197,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			stop()
 			wg.Done()
 		}()
-		sr := newStreamResult(info.StreamStatus)
 		for data := range dataChan {
 			sr.reset()
 			func() {
 				writeMutex.Lock()
 				defer writeMutex.Unlock()
-				ExtendWriteDeadline(c)
 				dataHandler(data, sr)
 			}()
 			if sr.IsStopped() {
@@ -277,6 +264,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 		}
 
+		// cleanup 关闭上游引起的读错不覆盖真实停止原因。
+		if ctx.Err() != nil {
+			return
+		}
 		if err := scanner.Err(); err != nil {
 			if err != io.EOF {
 				logger.LogError(c, "scanner error: "+err.Error())
@@ -299,6 +290,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	cleanup()
+	// 所有工作协程已退出；仅已写完并刷新终态的 Responses 可纠正收尾时取消。
+	if sr.delivered && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone && errors.Is(info.StreamStatus.EndError, context.Canceled) && !info.StreamStatus.HasErrors() {
+		info.StreamStatus.EndReason = relaycommon.StreamEndReasonDone
+		info.StreamStatus.EndError = nil
+	}
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
 	} else {

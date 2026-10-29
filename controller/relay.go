@@ -540,7 +540,7 @@ func relayUpstreamFinished(c *gin.Context, info *relaycommon.RelayInfo) bool {
 		return true
 	}
 	// 非流式没有统一的完成标记（如语音合成读正文出错仍返回成功），客户端已走时保守不算。
-	if !info.IsStream || info.StreamStatus == nil {
+	if !info.IsStream || info.StreamStatus == nil || info.StreamStatus.EndError != nil || info.StreamStatus.HasErrors() {
 		return false
 	}
 	switch info.StreamStatus.EndReason {

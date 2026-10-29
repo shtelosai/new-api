@@ -118,70 +118,8 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			details.InheritCacheWrites(usage.PromptTokensDetails)
 			usage.PromptTokensDetails = details
 		}
-		if guarded {
-			switch streamResponse.Type {
-			case "error":
-				var event struct {
-					Code    any                `json:"code"`
-					Message string             `json:"message"`
-					Error   *types.OpenAIError `json:"error"`
-				}
-				_ = common.UnmarshalJsonStr(data, &event)
-				upstream := types.OpenAIError{Type: "server_error", Code: event.Code, Message: event.Message}
-				if event.Error != nil {
-					upstream = *event.Error
-				}
-				if upstream.Message == "" {
-					upstream.Message = "上游 Responses 流返回错误"
-				}
-				streamError = responsesUpstreamError(upstream)
-			case "response.failed":
-				streamError = responsesFailure(streamResponse.Response)
-				if streamError == nil {
-					streamError = types.NewOpenAIError(fmt.Errorf("上游 Responses 流失败"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
-				}
-			case "response.completed", "response.incomplete":
-				streamError = responsesFailure(streamResponse.Response)
-				terminal = streamError == nil
-			}
-			if streamError != nil {
-				// 失败终态可能带有权威用量，优先于下方的文本估算。
-				if streamResponse.Response != nil && streamResponse.Response.Usage != nil {
-					reported := streamResponse.Response.Usage
-					usage.PromptTokens = reported.InputTokens
-					usage.CompletionTokens = reported.OutputTokens
-					if reported.InputTokensDetails != nil {
-						details := reported.InputTokensDetails.Clone()
-						details.InheritCacheWrites(usage.PromptTokensDetails)
-						usage.PromptTokensDetails = details
-					}
-				}
-				sr.Stop(streamError)
-				return
-			}
-			if streamResponse.Type == "response.output_text.delta" && streamResponse.Delta == "" {
-				return
-			}
-			if !service.TworkResponsesStreamCommitted(c) && !terminal && !helper.ResponseChunkHasSemanticOutput(streamResponse, data) &&
-				pendingBytes+len(data) <= responsesStartBufferLimit {
-				pending = append(pending, data)
-				pendingBytes += len(data)
-				return
-			}
-			// 超出上限时按原样放行：这次请求失去兜底，但健康渠道的正常回复不能被判成失败。
-			for _, buffered := range pending {
-				var event dto.ResponsesStreamResponse
-				_ = common.UnmarshalJsonStr(buffered, &event)
-				sendResponsesStreamData(c, event, buffered)
-			}
-			pending = nil
-		}
-		sendResponsesStreamData(c, streamResponse, data)
 		switch streamResponse.Type {
-		case "response.completed", "response.incomplete":
-			if streamResponse.Type == "response.incomplete" && !guarded {
-				break
-			}
+		case "response.completed", "response.done", "response.incomplete":
 			if streamResponse.Response != nil {
 				if streamResponse.Response.Usage != nil {
 					if streamResponse.Response.Usage.InputTokens != 0 {
@@ -221,8 +159,83 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				}
 			}
 		}
-		if guarded && terminal {
+		if guarded {
+			switch streamResponse.Type {
+			case "error":
+				var event struct {
+					Code    any                `json:"code"`
+					Message string             `json:"message"`
+					Error   *types.OpenAIError `json:"error"`
+				}
+				_ = common.UnmarshalJsonStr(data, &event)
+				upstream := types.OpenAIError{Type: "server_error", Code: event.Code, Message: event.Message}
+				if event.Error != nil {
+					upstream = *event.Error
+				}
+				if upstream.Message == "" {
+					upstream.Message = "上游 Responses 流返回错误"
+				}
+				streamError = responsesUpstreamError(upstream)
+			case "response.failed":
+				streamError = responsesFailure(streamResponse.Response)
+				if streamError == nil {
+					streamError = types.NewOpenAIError(fmt.Errorf("上游 Responses 流失败"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+				}
+			case "response.completed", "response.done", "response.incomplete":
+				streamError = responsesFailure(streamResponse.Response)
+				terminal = streamError == nil
+			}
+			if streamError != nil {
+				// 失败终态可能带有权威用量，优先于下方的文本估算。
+				if streamResponse.Response != nil && streamResponse.Response.Usage != nil {
+					reported := streamResponse.Response.Usage
+					usage.PromptTokens = reported.InputTokens
+					usage.CompletionTokens = reported.OutputTokens
+					if reported.InputTokensDetails != nil {
+						details := reported.InputTokensDetails.Clone()
+						details.InheritCacheWrites(usage.PromptTokensDetails)
+						usage.PromptTokensDetails = details
+					}
+				}
+				sr.Stop(streamError)
+				return
+			}
+			if streamResponse.Type == "response.output_text.delta" && streamResponse.Delta == "" {
+				return
+			}
+			if !service.TworkResponsesStreamCommitted(c) && !terminal && !helper.ResponseChunkHasSemanticOutput(streamResponse, data) &&
+				pendingBytes+len(data) <= responsesStartBufferLimit {
+				pending = append(pending, data)
+				pendingBytes += len(data)
+				return
+			}
+			// 超出上限时按原样放行：这次请求失去兜底，但健康渠道的正常回复不能被判成失败。
+			for _, buffered := range pending {
+				var event dto.ResponsesStreamResponse
+				_ = common.UnmarshalJsonStr(buffered, &event)
+				if err := sendResponsesStreamData(c, event, buffered); err != nil {
+					streamError = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+					sr.Stop(err)
+					return
+				}
+			}
+			pending = nil
+		}
+		if err := sendResponsesStreamData(c, streamResponse, data); err != nil {
+			streamError = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+			sr.Stop(err)
+			return
+		}
+		var status string
+		if streamResponse.Response != nil {
+			_ = common.Unmarshal(streamResponse.Response.Status, &status)
+		}
+		if (streamResponse.Type == "response.completed" || streamResponse.Type == "response.done") && status == "completed" {
+			sr.DoneAfterDelivery()
+		} else if guarded && terminal {
 			sr.Done()
+		} else if !guarded && (streamResponse.Type == "error" || streamResponse.Type == "response.failed" || status == "failed") {
+			sr.Error(fmt.Errorf("上游 Responses 返回失败终态"))
 		}
 	})
 

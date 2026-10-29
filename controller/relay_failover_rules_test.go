@@ -572,4 +572,10 @@ func TestRelayUpstreamFinishedOnlyWhenUpstreamEndedItself(t *testing.T) {
 	assert.False(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonClientGone)), "客户端中途放弃：上游未必正常，不算成功")
 	assert.False(t, relayUpstreamFinished(newContext(true), stream(relaycommon.StreamEndReasonTimeout)))
 	assert.False(t, relayUpstreamFinished(newContext(true), &relaycommon.RelayInfo{IsStream: true}))
+	withError := stream(relaycommon.StreamEndReasonDone)
+	withError.StreamStatus.RecordError("终态之前出现协议错误")
+	assert.False(t, relayUpstreamFinished(newContext(true), withError), "有历史错误的终态不能恢复冷却或更新粘性")
+	withEndError := stream(relaycommon.StreamEndReasonEOF)
+	withEndError.StreamStatus.EndError = context.Canceled
+	assert.False(t, relayUpstreamFinished(newContext(true), withEndError), "异常结束不能凭 EOF 名称判成功")
 }

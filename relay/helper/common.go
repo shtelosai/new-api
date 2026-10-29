@@ -37,6 +37,18 @@ func FlushWriter(c *gin.Context) (err error) {
 	}
 
 	flusher.Flush()
+	// Gin 的 Flush 丢弃底层错误；先刷新包装层，再读取底层 FlushError。
+	var writer http.ResponseWriter = c.Writer
+	for {
+		if flusher, ok := writer.(interface{ FlushError() error }); ok {
+			return flusher.FlushError()
+		}
+		unwrapper, ok := writer.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		writer = unwrapper.Unwrap()
+	}
 	return nil
 }
 
@@ -58,6 +70,7 @@ func SetEventStreamHeaders(c *gin.Context) {
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("Transfer-Encoding", "chunked")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer = &streamResponseWriter{ResponseWriter: c.Writer}
 }
 
 func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
@@ -96,8 +109,14 @@ func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data st
 		common.SetContextKey(c, constant.ContextKeyTworkResponsesStreamCommitted, true)
 	}
 
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s", data)})
+	event := common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)}
+	if err := event.Render(c.Writer); err != nil {
+		return err
+	}
+	event.Data = fmt.Sprintf("data: %s", data)
+	if err := event.Render(c.Writer); err != nil {
+		return err
+	}
 	return FlushWriter(c)
 }
 
