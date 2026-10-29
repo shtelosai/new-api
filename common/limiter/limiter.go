@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
@@ -62,6 +63,11 @@ func (rl *RedisLimiter) Allow(ctx context.Context, key string, opts ...Option) (
 		config.Capacity,
 	).Int()
 
+	// Redis 重启或 SCRIPT FLUSH 会丢失脚本缓存；仅 NOSCRIPT 时回退一次 EVAL。
+	// 使用相同 key 和参数执行，保留原桶状态，其他错误按原样返回。
+	if err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
+		result, err = rl.client.Eval(ctx, rateLimitScript, []string{key}, config.Requested, config.Rate, config.Capacity).Int()
+	}
 	if err != nil {
 		return false, fmt.Errorf("rate limit failed: %w", err)
 	}
