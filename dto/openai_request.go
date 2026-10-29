@@ -233,6 +233,9 @@ func (r *GeneralOpenAIRequest) GetSystemRoleName() string {
 	} else if IsOpenAIGPT5Model(r.Model) {
 		return "developer"
 	}
+	if _, ok := ResolveGPT61ChatParameters(r.Model, r.ReasoningEffort); ok {
+		return "developer"
+	}
 	return "system"
 }
 

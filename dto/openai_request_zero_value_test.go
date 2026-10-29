@@ -84,6 +84,11 @@ func TestGeneralOpenAIRequestGetSystemRoleName(t *testing.T) {
 		{name: "o1 mini stays system", model: "o1-mini", want: "system"},
 		{name: "o1 preview stays system", model: "o1-preview", want: "system"},
 		{name: "gpt 5 uses developer", model: "gpt-5", want: "developer"},
+		{name: "GPT61 Sol uses developer", model: "gpt-6.1-sol", want: "developer"},
+		{name: "GPT61 Terra suffix uses developer", model: "gpt-6.1-terra-high", want: "developer"},
+		{name: "GPT61 dated Terra uses developer", model: "gpt-6.1-terra-2026-10-20-none", want: "developer"},
+		{name: "GPT61 unknown variant stays system", model: "gpt-6.1-terra-custom", want: "system"},
+		{name: "GPT61 invalid date stays system", model: "gpt-6.1-sol-2026-02-30", want: "system"},
 		{name: "omni is not o series", model: "omni-moderation-latest", want: "system"},
 	}
 

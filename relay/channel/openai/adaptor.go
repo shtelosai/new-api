@@ -318,6 +318,29 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		}
 
 	}
+	if info.ChannelType == constant.ChannelTypeOpenAI || info.ChannelType == constant.ChannelTypeAzure {
+		if params, ok := dto.ResolveGPT61ChatParameters(info.UpstreamModelName, request.ReasoningEffort); ok {
+			request.Model = params.Model
+			info.UpstreamModelName = params.Model
+			request.ReasoningEffort = params.ReasoningEffort
+			info.ReasoningEffort = params.ReasoningEffort
+			// 显式 max_completion_tokens 优先，包括 0；不能同时发出两种上限。
+			if request.MaxCompletionTokens == nil {
+				request.MaxCompletionTokens = request.MaxTokens
+			}
+			request.MaxTokens = nil
+			if !params.SupportsSampling {
+				request.Temperature = nil
+				request.TopP = nil
+				request.LogProbs = nil
+				request.TopLogProbs = nil
+			}
+			if len(request.Messages) > 0 && request.Messages[0].Role == "system" {
+				request.Messages[0].Role = "developer"
+			}
+			return request, nil
+		}
+	}
 	isOModel := dto.IsOpenAIReasoningOModel(info.UpstreamModelName)
 	isGPT5Model := dto.IsOpenAIGPT5Model(info.UpstreamModelName)
 	if isOModel || isGPT5Model {

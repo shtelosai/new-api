@@ -888,6 +888,10 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 				},
 				MaxTokens: lo.ToPtr(maxTokens),
 			}
+			if _, ok := dto.ResolveGPT61ChatParameters(model, ""); ok && (channel.Type == constant.ChannelTypeOpenAI || channel.Type == constant.ChannelTypeAzure) {
+				req.MaxCompletionTokens = req.MaxTokens
+				req.MaxTokens = nil
+			}
 			if isStream {
 				req.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
 			}
@@ -948,7 +952,9 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 		testRequest.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
 	}
 
-	if dto.IsOpenAIReasoningOModel(model) {
+	_, isGPT61 := dto.ResolveGPT61ChatParameters(model, "")
+	isGPT61 = isGPT61 && (channel.Type == constant.ChannelTypeOpenAI || channel.Type == constant.ChannelTypeAzure)
+	if dto.IsOpenAIReasoningOModel(model) || isGPT61 {
 		testRequest.MaxCompletionTokens = lo.ToPtr(uint(16))
 	} else if strings.Contains(model, "thinking") {
 		if !strings.Contains(model, "claude") {
