@@ -737,3 +737,52 @@ func mustRawMessage(t *testing.T, value any) []byte {
 	require.NoError(t, err)
 	return raw
 }
+
+func TestGeminiToOpenAIChatPreservesTextAlongsideToolCalls(t *testing.T) {
+	const text = "I will check the weather."
+	call := dto.GeminiPart{FunctionCall: &dto.FunctionCall{
+		FunctionName: "get_weather", Arguments: map[string]any{"city": "Paris"},
+	}}
+	for _, tt := range []struct {
+		name      string
+		parts     []dto.GeminiPart
+		wantText  []string
+		wantCalls int
+	}{
+		{name: "text and call", parts: []dto.GeminiPart{{Text: text}, call}, wantText: []string{text}, wantCalls: 1},
+		{name: "text around call", parts: []dto.GeminiPart{{Text: text}, call, {Text: "Please wait."}}, wantText: []string{text, "Please wait."}, wantCalls: 1},
+		{name: "call only", parts: []dto.GeminiPart{call}, wantCalls: 1},
+		{name: "text only", parts: []dto.GeminiPart{{Text: text}}, wantText: []string{text}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := &dto.GeminiChatRequest{Contents: []dto.GeminiChatContent{{Role: "model", Parts: tt.parts}}}
+			result, err := ConvertRequest(nil, &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-4o"},
+			}, types.RelayFormatOpenAI, request)
+			require.NoError(t, err)
+			converted, ok := result.Value.(*dto.GeneralOpenAIRequest)
+			require.True(t, ok)
+			// 核对实际发送到上游的 JSON，覆盖 DTO 自定义序列化。
+			body, err := common.Marshal(converted)
+			require.NoError(t, err)
+			var wire dto.GeneralOpenAIRequest
+			require.NoError(t, common.Unmarshal(body, &wire))
+			require.Len(t, wire.Messages, 1)
+			assistant := wire.Messages[0]
+			assert.Equal(t, "assistant", assistant.Role)
+			content := assistant.ParseContent()
+			require.Len(t, content, len(tt.wantText))
+			for i, want := range tt.wantText {
+				assert.Equal(t, "text", content[i].Type)
+				assert.Equal(t, want, content[i].Text)
+			}
+			calls := assistant.ParseToolCalls()
+			require.Len(t, calls, tt.wantCalls)
+			if tt.wantCalls > 0 {
+				assert.Equal(t, "call_1", calls[0].ID)
+				assert.Equal(t, "get_weather", calls[0].Function.Name)
+				assert.JSONEq(t, `{"city":"Paris"}`, calls[0].Function.Arguments)
+			}
+		})
+	}
+}

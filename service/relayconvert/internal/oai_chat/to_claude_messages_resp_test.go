@@ -3,6 +3,8 @@ package oaichat
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/stretchr/testify/assert"
@@ -13,14 +15,17 @@ func TestResponseOpenAI2ClaudeToolUseInputIsObject(t *testing.T) {
 	tests := []struct {
 		name string
 		args string
-		want map[string]interface{}
+		want string
 	}{
-		{name: "object", args: `{"q":"x"}`, want: map[string]interface{}{"q": "x"}},
-		{name: "empty", args: "", want: map[string]interface{}{}},
-		{name: "invalid", args: "{", want: map[string]interface{}{}},
-		{name: "null", args: "null", want: map[string]interface{}{}},
-		{name: "array", args: `["x"]`, want: map[string]interface{}{}},
-		{name: "string", args: `"x"`, want: map[string]interface{}{}},
+		{name: "large integer", args: `{"id":9007199254740993}`, want: `{"id":9007199254740993}`},
+		{name: "nested integer", args: `{"ids":[18446744073709551615]}`, want: `{"ids":[18446744073709551615]}`},
+		{name: "precise decimal", args: `{"value":0.123456789012345678901}`, want: `{"value":0.123456789012345678901}`},
+		{name: "object", args: `{"q":"x"}`, want: `{"q":"x"}`},
+		{name: "empty", args: "", want: `{}`},
+		{name: "invalid", args: "{", want: `{}`},
+		{name: "null", args: "null", want: `{}`},
+		{name: "array", args: `["x"]`, want: `{}`},
+		{name: "string", args: `"x"`, want: `{}`},
 	}
 
 	for _, tt := range tests {
@@ -47,7 +52,9 @@ func TestResponseOpenAI2ClaudeToolUseInputIsObject(t *testing.T) {
 
 			require.Len(t, resp.Content, 1)
 			assert.Equal(t, "tool_use", resp.Content[0].Type)
-			assert.Equal(t, tt.want, resp.Content[0].Input)
+			encoded, err := common.Marshal(resp.Content[0].Input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, string(encoded))
 		})
 	}
 }

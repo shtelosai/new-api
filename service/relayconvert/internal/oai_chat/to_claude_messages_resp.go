@@ -1,6 +1,7 @@
 package oaichat
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -456,9 +457,9 @@ func ResponseOpenAI2Claude(openAIResponse *dto.OpenAITextResponse, info *relayco
 			claudeContent.Type = "tool_use"
 			claudeContent.Id = toolUse.ID
 			claudeContent.Name = toolUse.Function.Name
-			mapParams := map[string]interface{}{}
+			mapParams := map[string]json.RawMessage{}
 			if strings.TrimSpace(toolUse.Function.Arguments) != "" {
-				var parsed map[string]interface{}
+				var parsed map[string]json.RawMessage
 				if err := common.Unmarshal([]byte(toolUse.Function.Arguments), &parsed); err == nil && parsed != nil {
 					mapParams = parsed
 				}
