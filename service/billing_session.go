@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -41,7 +42,7 @@ type BillingSession struct {
 func (s *BillingSession) Settle(actualQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.settled {
+	if s.settled || s.refunded {
 		return nil
 	}
 	delta := actualQuota - s.preConsumedQuota
@@ -173,6 +174,51 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	s.preConsumedQuota += delta
 	s.tokenConsumed += delta
 	s.extraReserved += delta
+	s.syncRelayInfo()
+	return nil
+}
+
+// ReserveBeforeSubmit 复用原资金来源；钱包/令牌不足时不发上游，也不新建计费会话。
+func (s *BillingSession) ReserveBeforeSubmit(targetQuota int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if targetQuota < 0 {
+		return types.NewError(fmt.Errorf("negative task reservation"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	}
+	if s.settled || s.refunded || targetQuota <= s.preConsumedQuota {
+		return nil
+	}
+	delta := targetQuota - s.preConsumedQuota
+	userID := 0
+	if s.funding.Source() == BillingSourceWallet {
+		userID = s.relayInfo.UserId
+	}
+	tokenID := s.relayInfo.TokenId
+	if s.relayInfo.IsPlayground {
+		tokenID = 0
+	}
+	// 沿用原订阅 ID；订阅/钱包与令牌在同一事务预留，失败时无需跨事务补偿。
+	subscriptionID := 0
+	if funding, ok := s.funding.(*SubscriptionFunding); ok {
+		subscriptionID = funding.subscriptionId
+	}
+	if err := model.ReserveTaskRetryQuota(userID, tokenID, subscriptionID, s.relayInfo.TokenKey, delta, s.relayInfo.TokenUnlimited); err != nil {
+		switch {
+		case errors.Is(err, model.ErrTaskRetryWalletQuota), errors.Is(err, model.ErrSubscriptionQuotaInsufficient):
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		case errors.Is(err, model.ErrTaskRetryTokenQuota):
+			return types.NewErrorWithStatusCode(err, types.ErrorCodePreConsumeTokenQuotaFailed, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		default:
+			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
+	}
+	if funding, ok := s.funding.(*WalletFunding); ok {
+		funding.consumed += delta
+	}
+	s.preConsumedQuota += delta
+	s.tokenConsumed += delta
+	s.extraReserved += delta
+	s.trusted = false
 	s.syncRelayInfo()
 	return nil
 }
