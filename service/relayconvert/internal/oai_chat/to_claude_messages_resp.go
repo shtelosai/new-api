@@ -42,7 +42,7 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 	)
 	cacheCreationTokens := oaiUsage.PromptTokensDetails.CacheCreationTokensTotal()
 	inputTokens := oaiUsage.PromptTokens
-	if oaiUsage.PromptTokensDetails.CacheWriteTokens > 0 {
+	if oaiUsage.PromptTokensDetails.CacheWriteTokens > 0 || oaiUsage.PromptTokensDetails.CacheCreationInputTokens > 0 {
 		// OpenAI native cache-write usage counts cached and cache-write tokens
 		// inside prompt_tokens, while Claude semantics reports input_tokens
 		// excluding both. Both counts are unadjusted prefixes and may overlap,

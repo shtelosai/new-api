@@ -100,6 +100,15 @@ export const BILLING_VARS: BillingVar[] = [
     group: 'cache',
   },
   {
+    key: 'cc12h',
+    field: 'cacheCreate12hPrice',
+    tierField: 'cache_create_12h_unit_cost',
+    label: 'Cache create (12h) price',
+    shortLabel: 'Cache Write (12h)',
+    side: 'input',
+    group: 'cache',
+  },
+  {
     key: 'img',
     field: 'imagePrice',
     tierField: 'image_unit_cost',

@@ -1,3 +1,4 @@
+import type { TFunction } from 'i18next'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -31,7 +32,6 @@ import {
   Info,
   LogIn,
 } from 'lucide-react'
-import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -179,7 +179,9 @@ function getUsageBillingPathLabel(
   }
 }
 
-function isUsageBillingPathLocal(adminInfo: LogOtherData['admin_info']): boolean {
+function isUsageBillingPathLocal(
+  adminInfo: LogOtherData['admin_info']
+): boolean {
   if (adminInfo?.usage_billing_path) {
     return adminInfo.usage_billing_path === USAGE_BILLING_PATH.LOCAL
   }
@@ -317,6 +319,16 @@ function BillingBreakdown(props: {
     }
   }
 
+  if (
+    !isTieredExpr &&
+    other.cache_creation_ratio_12h != null &&
+    other.cache_creation_ratio_12h !== 0
+  ) {
+    rows.push({
+      label: t('Cache create (12h) price'),
+      value: `${fmtPrice(baseInputUSD * other.cache_creation_ratio_12h)}/M`,
+    })
+  }
   if (!isTieredExpr) {
     if (other.audio_ratio != null && other.audio_ratio !== 1) {
       rows.push({
@@ -404,6 +416,7 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const cacheWrite = other.cache_creation_tokens || 0
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0
+  const cacheWrite12h = other.cache_creation_tokens_12h || 0
   const hasTokens = promptTokens > 0 || completionTokens > 0
 
   if (!hasTokens) return null
@@ -423,10 +436,17 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     })
   }
 
-  if (cacheWrite > 0 && cacheWrite5m === 0 && cacheWrite1h === 0) {
+  const unsplitWrite = Math.max(
+    cacheWrite - cacheWrite5m - cacheWrite1h - cacheWrite12h,
+    0
+  )
+  if (unsplitWrite > 0) {
     rows.push({
-      label: t('Cache Write'),
-      value: cacheWrite.toLocaleString(),
+      label:
+        cacheWrite12h > 0 && cacheWrite5m === 0 && cacheWrite1h === 0
+          ? t('Cache Write (30m)')
+          : t('Cache Write'),
+      value: unsplitWrite.toLocaleString(),
     })
   }
 
@@ -444,6 +464,12 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     })
   }
 
+  if (cacheWrite12h > 0) {
+    rows.push({
+      label: t('Cache Write (12h)'),
+      value: cacheWrite12h.toLocaleString(),
+    })
+  }
   if (other.image && other.image_output) {
     rows.push({
       label: t('Image Tokens'),

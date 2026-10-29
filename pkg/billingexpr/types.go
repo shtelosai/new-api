@@ -13,19 +13,20 @@ type RequestInput struct {
 }
 
 // TokenParams holds all token dimensions passed into an Expr evaluation.
-// Fields beyond P and C are optional — when absent they default to 0,
-// which means cache-unaware expressions keep working unchanged.
+// Fields beyond P and C are optional. Unpriced cache categories fold into P;
+// long-lived cache writes follow the documented TTL normalization rules.
 type TokenParams struct {
-	P    float64 // prompt tokens (text) — auto-excludes sub-categories priced separately
-	C    float64 // completion tokens (text) — auto-excludes sub-categories priced separately
-	Len  float64 // total input context length for tier conditions (non-Claude: raw prompt_tokens; Claude: text + cache read + cache creation)
-	CR   float64 // cache read (hit) tokens
-	CC   float64 // cache creation tokens (5-min TTL for Claude, generic for others)
-	CC1h float64 // cache creation tokens — 1-hour TTL (Claude only)
-	Img  float64 // image input tokens
-	ImgO float64 // image output tokens
-	AI   float64 // audio input tokens
-	AO   float64 // audio output tokens
+	P     float64 // prompt tokens (text) — auto-excludes sub-categories priced separately
+	C     float64 // completion tokens (text) — auto-excludes sub-categories priced separately
+	Len   float64 // total input context length for tier conditions (non-Claude: raw prompt_tokens; Claude: text + cache read + cache creation)
+	CR    float64 // cache read (hit) tokens
+	CC    float64 // cache creation tokens (5-min TTL for Claude, generic for others)
+	CC12h float64 // OpenAI 12 小时缓存写入
+	CC1h  float64 // cache creation tokens — 1-hour TTL (Claude only)
+	Img   float64 // image input tokens
+	ImgO  float64 // image output tokens
+	AI    float64 // audio input tokens
+	AO    float64 // audio output tokens
 }
 
 // TraceResult holds side-channel info captured by the tier() function

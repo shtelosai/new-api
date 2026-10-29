@@ -74,6 +74,9 @@ func ResponsesStreamEventToChatChunks(event *dto.ResponsesStreamResponse, state 
 	}
 
 	switch event.Type {
+	case "response.in_progress":
+		state.applyResponseMetadata(event.Response)
+		return nil, nil
 	case responsesEventCreated:
 		state.applyResponseMetadata(event.Response)
 		return state.ensureStart(), nil
@@ -132,7 +135,16 @@ func (s *ResponsesToChatStreamState) applyResponseMetadata(response *dto.OpenAIR
 		s.Created = int64(response.CreatedAt)
 	}
 	if response.Usage != nil {
-		s.Usage = UsageFromResponsesUsage(response.Usage)
+		incoming := *response.Usage
+		details := dto.InputTokenDetails{}
+		if incoming.InputTokensDetails != nil {
+			details = incoming.InputTokensDetails.Clone()
+		}
+		if s.Usage != nil {
+			details.InheritCacheWrites(s.Usage.PromptTokensDetails)
+		}
+		incoming.InputTokensDetails = &details
+		s.Usage = UsageFromResponsesUsage(&incoming)
 	}
 }
 

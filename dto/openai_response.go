@@ -260,27 +260,71 @@ type InputTokenDetails struct {
 	// prompt_tokens_details.cache_write_tokens (Chat Completions) or
 	// input_tokens_details.cache_write_tokens (Responses). It is billed at the
 	// cache-creation price.
-	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
-	TextTokens       int `json:"text_tokens"`
-	AudioTokens      int `json:"audio_tokens"`
-	ImageTokens      int `json:"image_tokens"`
+	CacheWriteTokens         int                     `json:"cache_write_tokens,omitempty"`
+	CacheCreationInputTokens int                     `json:"cache_creation_input_tokens,omitempty"`
+	CacheWriteTokensDetails  *CacheWriteTokenDetails `json:"cache_write_tokens_details,omitempty"`
+	TextTokens               int                     `json:"text_tokens"`
+	AudioTokens              int                     `json:"audio_tokens"`
+	ImageTokens              int                     `json:"image_tokens"`
 }
 
-// CacheCreationTokensTotal returns the cache-write token count regardless of
-// which field the upstream reported it in: Claude-derived conversions populate
-// CachedCreationTokens while OpenAI reports cache_write_tokens natively. Both
-// are billed at the cache-creation price; when both are present the larger
-// value wins so the same tokens are never double-counted. Negative upstream
-// values are clamped to zero so they can never lower a charge.
-func (d InputTokenDetails) CacheCreationTokensTotal() int {
-	total := d.CachedCreationTokens
-	if d.CacheWriteTokens > total {
-		total = d.CacheWriteTokens
+// CacheWriteTokenDetails 的两个 TTL 子集互不重叠，包含在缓存写入总数中。
+type CacheWriteTokenDetails struct {
+	TTL30mTokens int `json:"ttl_30m_tokens"`
+	TTL12hTokens int `json:"ttl_12h_tokens"`
+}
+
+func (d *CacheWriteTokenDetails) HasTokens() bool {
+	return d != nil && (d.TTL30mTokens != 0 || d.TTL12hTokens != 0)
+}
+
+func (d InputTokenDetails) Clone() InputTokenDetails {
+	if d.CacheWriteTokensDetails != nil {
+		details := *d.CacheWriteTokensDetails
+		d.CacheWriteTokensDetails = &details
 	}
-	if total < 0 {
+	return d
+}
+
+// 流式累计用量的后续分段可能只带输出统计；缺省或零值不能抹掉已报告的缓存写入。
+// 新的正值覆盖旧值，不能把累计快照相加。
+func (d *InputTokenDetails) InheritCacheWrites(previous InputTokenDetails) {
+	if d.CacheWriteTokens <= 0 {
+		d.CacheWriteTokens = max(previous.CacheWriteTokens, 0)
+	}
+	if d.CachedCreationTokens <= 0 {
+		d.CachedCreationTokens = max(previous.CachedCreationTokens, 0)
+	}
+	if d.CacheCreationInputTokens <= 0 {
+		d.CacheCreationInputTokens = max(previous.CacheCreationInputTokens, 0)
+	}
+	if previous.CacheWriteTokensDetails == nil {
+		return
+	}
+	details := CacheWriteTokenDetails{}
+	if d.CacheWriteTokensDetails != nil {
+		details = *d.CacheWriteTokensDetails
+	}
+	if details.TTL30mTokens <= 0 {
+		details.TTL30mTokens = max(previous.CacheWriteTokensDetails.TTL30mTokens, 0)
+	}
+	if details.TTL12hTokens <= 0 {
+		details.TTL12hTokens = max(previous.CacheWriteTokensDetails.TTL12hTokens, 0)
+	}
+	d.CacheWriteTokensDetails = &details
+}
+
+// 同一批缓存写入可能通过多个别名报告，取最大值，不能相加重复收费。
+func (d InputTokenDetails) CacheCreationTokensTotal() int {
+	return max(d.CachedCreationTokens, d.CacheWriteTokens, d.CacheCreationInputTokens, 0)
+}
+
+// 长 TTL 是总写入的子集，异常负值和超量报告不能扩大收费。
+func (d InputTokenDetails) CacheWrite12hTokens() int {
+	if d.CacheWriteTokensDetails == nil {
 		return 0
 	}
-	return total
+	return min(max(d.CacheWriteTokensDetails.TTL12hTokens, 0), d.CacheCreationTokensTotal())
 }
 
 type OutputTokenDetails struct {

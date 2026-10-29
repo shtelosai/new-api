@@ -55,8 +55,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		usage.CompletionTokens = responsesResponse.Usage.OutputTokens
 		usage.TotalTokens = responsesResponse.Usage.TotalTokens
 		if responsesResponse.Usage.InputTokensDetails != nil {
-			usage.PromptTokensDetails.CachedTokens = responsesResponse.Usage.InputTokensDetails.CachedTokens
-			usage.PromptTokensDetails.CacheWriteTokens = responsesResponse.Usage.InputTokensDetails.CacheWriteTokens
+			usage.PromptTokensDetails = responsesResponse.Usage.InputTokensDetails.Clone()
 		}
 	}
 	if info == nil || info.ResponsesUsageInfo == nil || info.ResponsesUsageInfo.BuiltInTools == nil {
@@ -114,6 +113,11 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			}
 			return
 		}
+		if streamResponse.Response != nil && streamResponse.Response.Usage != nil && streamResponse.Response.Usage.InputTokensDetails != nil {
+			details := streamResponse.Response.Usage.InputTokensDetails.Clone()
+			details.InheritCacheWrites(usage.PromptTokensDetails)
+			usage.PromptTokensDetails = details
+		}
 		if guarded {
 			switch streamResponse.Type {
 			case "error":
@@ -147,8 +151,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 					usage.PromptTokens = reported.InputTokens
 					usage.CompletionTokens = reported.OutputTokens
 					if reported.InputTokensDetails != nil {
-						usage.PromptTokensDetails.CachedTokens = reported.InputTokensDetails.CachedTokens
-						usage.PromptTokensDetails.CacheWriteTokens = reported.InputTokensDetails.CacheWriteTokens
+						details := reported.InputTokensDetails.Clone()
+						details.InheritCacheWrites(usage.PromptTokensDetails)
+						usage.PromptTokensDetails = details
 					}
 				}
 				sr.Stop(streamError)
@@ -189,8 +194,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 						usage.TotalTokens = streamResponse.Response.Usage.TotalTokens
 					}
 					if streamResponse.Response.Usage.InputTokensDetails != nil {
-						usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
-						usage.PromptTokensDetails.CacheWriteTokens = streamResponse.Response.Usage.InputTokensDetails.CacheWriteTokens
+						details := streamResponse.Response.Usage.InputTokensDetails.Clone()
+						details.InheritCacheWrites(usage.PromptTokensDetails)
+						usage.PromptTokensDetails = details
 					}
 				}
 				if streamResponse.Response.HasImageGenerationCall() {

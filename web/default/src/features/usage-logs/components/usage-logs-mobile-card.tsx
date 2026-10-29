@@ -209,7 +209,7 @@ function MobileTokensField({ log }: { log: UsageLog }) {
   const cacheWrite1h = other?.cache_creation_tokens_1h || 0
   const hasSplitCache = cacheWrite5m > 0 || cacheWrite1h > 0
   const cacheWriteTokens = hasSplitCache
-    ? cacheWrite5m + cacheWrite1h
+    ? Math.max(other?.cache_creation_tokens || 0, cacheWrite5m + cacheWrite1h)
     : other?.cache_creation_tokens || 0
   const showCache = cacheReadTokens > 0 || cacheWriteTokens > 0
 

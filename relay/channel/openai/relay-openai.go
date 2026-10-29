@@ -192,6 +192,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			sawFinish = true
 		}
 		if reported := streamChunkUsage(data); reported != nil {
+			if latestUsage != nil {
+				reported.PromptTokensDetails.InheritCacheWrites(latestUsage.PromptTokensDetails)
+			}
 			latestUsage = reported
 		}
 		if oaiErr := streamChunkError(data); oaiErr != nil {
@@ -252,6 +255,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 			usage.CompletionTokens += toolCount * 7
 		}
+		if latestUsage != nil {
+			usage.PromptTokensDetails.InheritCacheWrites(latestUsage.PromptTokensDetails)
+		}
 		applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 		return usage, nil
 	}
@@ -311,6 +317,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		usage.CompletionTokens += toolCount * 7
 	}
 
+	if latestUsage != nil {
+		usage.PromptTokensDetails.InheritCacheWrites(latestUsage.PromptTokensDetails)
+	}
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 
 	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo != nil && latestUsage != nil {

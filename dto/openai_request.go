@@ -72,6 +72,8 @@ type GeneralOpenAIRequest struct {
 	// 是否存储此次请求数据供 OpenAI 用于评估和优化产品
 	// 注意：默认允许透传，可通过 disable_store 禁用；禁用后可能导致 Codex 无法正常使用
 	Store json.RawMessage `json:"store,omitempty"`
+	// 缓存 TTL 等选项须原样转发，不根据请求选项推测计费用量。
+	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
 	// Used by OpenAI to cache responses for similar requests to optimize your cache hit rates. Replaces the user field
 	PromptCacheKey       string          `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention json.RawMessage `json:"prompt_cache_retention,omitempty"`

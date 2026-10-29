@@ -33,8 +33,9 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 | `p` | 输入 token 数（**计价用**）。**自动排除**表达式中单独计价的子类别（见下方说明） |
 | `len` | 输入上下文总长度（**条件判断用**）。不受自动排除影响，始终反映完整输入长度。非 Claude：等于原始 `prompt_tokens`；Claude：等于文本输入 + 缓存读取 + 缓存创建 |
 | `cr` | 缓存命中（读取）token 数 |
-| `cc` | 缓存创建 token 数（Claude 5分钟 TTL / 通用） |
+| `cc` | 短 TTL / 通用缓存创建计价 token 数（Claude 5 分钟、OpenAI 30 分钟；长 TTL 未单列时按下述规则折算） |
 | `cc1h` | 缓存创建 token 数 — 1小时 TTL（Claude 专用） |
+| `cc12h` | 缓存创建 token 数 — 12 小时 TTL（OpenAI 专用） |
 | `img` | 图片输入 token 数 |
 | `ai` | 音频输入 token 数 |
 
@@ -70,6 +71,27 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 | `p * 3 + c * 15 + ao * 50` | 400 | 用了 `ao`，音频 100 从 `c` 中扣除按 $50 计费 |
 
 > **注意：** 这个自动排除仅针对 GPT/OpenAI 格式的 API（prompt_tokens 包含所有子类别）。Claude 格式的 API（input_tokens 本身就只包含纯文本）不做任何减法。系统根据上游返回格式自动判断，表达式作者无需关心。
+
+#### 缓存写入总量与 TTL 回退
+
+OpenAI 兼容上游的 `cached_creation_tokens`、`cache_write_tokens`、`cache_creation_input_tokens` 可能指向同一批写入，取非负最大值，不能相加。`cache_write_tokens_details.ttl_12h_tokens` 是总写入的子集，限定在 `[0, 总写入]`；不根据请求中的 `prompt_cache_options` 推测实际用量。没有 TTL 拆分的写入沿用通用 `cc`。
+
+Claude 的总写入没有完整 5m / 1h 拆分时，未标明的剩余量归入 5m。Claude 输入本身不含缓存，表达式未使用的读取和写入必须回并到 `p`，不能漏计。
+
+长 TTL 有独立变量时按表达式自己的系数计算；未引用独立变量时采用固定的协议折算规则：
+
+| 场景 | 计价归属 |
+| --- | --- |
+| OpenAI 12h，表达式引用 `cc12h` | 原始 12h token 数传给 `cc12h` |
+| OpenAI 12h，未引用 `cc12h`，引用 `cc` | 以 2 倍 token 数并入 `cc` |
+| OpenAI 12h，`cc12h` / `cc` 都未引用 | 以 2 倍 token 数并入 `p` |
+| Claude 1h，未引用 `cc1h`，引用 `cc` | 以 `6 / 3.75 = 1.6` 倍 token 数并入 `cc` |
+| Claude 1h，`cc1h` / `cc` 都未引用 | 以 1.6 倍 token 数并入 `p` |
+| 短 TTL 写入未引用 `cc`；读取未引用 `cr` | 以原始 token 数并入 `p` |
+
+上述折算只影响计价变量，`len` 始终保留未经折算的实际上下文长度。扣除 OpenAI 已包含的缓存子类别时按原始数量扣除，不能按折算数量扣除；剩余 `p` / `c` 保持非负。传统倍率计费的 12h 写入使用通用写入倍率的 2 倍，分组和渠道倍率各应用一次。
+
+流式累计用量后续未提供或报告为零的缓存写入字段不覆盖先前正值；后续正值覆盖旧值，不能累加快照。快照中的 TTL 指针必须深拷贝。只有缓存、没有文本输入输出的有效用量仍须结算；全部用量缺失时退还预扣。
 
 ### Built-in Functions
 

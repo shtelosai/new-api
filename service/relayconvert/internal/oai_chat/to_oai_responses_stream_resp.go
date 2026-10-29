@@ -78,7 +78,12 @@ func ChatCompletionsStreamChunkToResponsesEvents(chunk *dto.ChatCompletionsStrea
 		state.Created = chunk.Created
 	}
 	if chunk.Usage != nil {
-		state.Usage = UsageFromChatUsage(chunk.Usage)
+		incoming := *chunk.Usage
+		incoming.PromptTokensDetails = incoming.PromptTokensDetails.Clone()
+		if state.Usage != nil {
+			incoming.PromptTokensDetails.InheritCacheWrites(state.Usage.PromptTokensDetails)
+		}
+		state.Usage = UsageFromChatUsage(&incoming)
 	}
 
 	events := make([]ChatToResponsesStreamEvent, 0)

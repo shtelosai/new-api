@@ -2028,7 +2028,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Related Projects",
     "footer.defaultCopyright": "All rights reserved.",
-    "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
+    "footer.newapi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "Force a syntactically valid JSON response",
@@ -5211,5 +5211,8 @@
     "Responses is unavailable, Chat Completions works. Switching is up to you.": "Responses is unavailable, Chat Completions works. Switching is up to you.",
     "Use Chat Completions": "Use Chat Completions",
     "Both protocols failed ({{model}}): {{error}}": "Both protocols failed ({{model}}): {{error}}"
-  }
+  },
+  "Cache create (12h) price": "Cache create (12h) price",
+  "Cache Write (12h)": "Cache Write (12h)",
+  "Cache Write (30m)": "Cache Write (30m)"
 }

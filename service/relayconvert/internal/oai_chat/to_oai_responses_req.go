@@ -381,20 +381,21 @@ func ChatCompletionsRequestToResponsesRequest(req *dto.GeneralOpenAIRequest) (*d
 	}
 
 	out := &dto.OpenAIResponsesRequest{
-		Model:             req.Model,
-		Input:             inputRaw,
-		Instructions:      instructionsRaw,
-		Stream:            req.Stream,
-		Temperature:       req.Temperature,
-		Text:              textRaw,
-		ToolChoice:        toolChoiceRaw,
-		Tools:             toolsRaw,
-		TopP:              topP,
-		User:              req.User,
-		ParallelToolCalls: parallelToolCallsRaw,
-		Store:             req.Store,
-		Metadata:          req.Metadata,
-		PromptCacheKey:    promptCacheKeyRaw,
+		Model:              req.Model,
+		Input:              inputRaw,
+		Instructions:       instructionsRaw,
+		Stream:             req.Stream,
+		Temperature:        req.Temperature,
+		Text:               textRaw,
+		ToolChoice:         toolChoiceRaw,
+		Tools:              toolsRaw,
+		TopP:               topP,
+		User:               req.User,
+		ParallelToolCalls:  parallelToolCallsRaw,
+		Store:              req.Store,
+		Metadata:           req.Metadata,
+		PromptCacheKey:     promptCacheKeyRaw,
+		PromptCacheOptions: req.PromptCacheOptions,
 	}
 	if req.MaxTokens != nil || req.MaxCompletionTokens != nil {
 		out.MaxOutputTokens = lo.ToPtr(maxOutputTokens)

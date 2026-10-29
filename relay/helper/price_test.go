@@ -16,6 +16,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestModelPriceHelperSets12hCacheWriteRatio(t *testing.T) {
+	modelRatios := ratio_setting.ModelRatio2JSONString()
+	cacheRatios, err := common.Marshal(ratio_setting.GetCreateCacheRatioCopy())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(modelRatios))
+		require.NoError(t, ratio_setting.UpdateCreateCacheRatioByJSONString(string(cacheRatios)))
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"cache-price-test":1}`))
+	require.NoError(t, ratio_setting.UpdateCreateCacheRatioByJSONString(`{"cache-price-test":1.25}`))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set("group", "default")
+	info := &relaycommon.RelayInfo{OriginModelName: "cache-price-test", UserGroup: "default", UsingGroup: "default"}
+	price, err := ModelPriceHelper(c, info, 100, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	require.Equal(t, 1.25, price.CacheCreationRatio)
+	require.Equal(t, 2.5, price.CacheCreation12hRatio)
+	require.Equal(t, 2.0, price.CacheCreation1hRatio)
+}
+
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

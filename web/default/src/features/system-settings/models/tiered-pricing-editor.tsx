@@ -889,8 +889,8 @@ function RawExprEditor({ exprString, onChange }: RawExprEditorProps) {
           <div>
             {t('Variables')}: <code>len</code>, <code>p</code>, <code>c</code>,{' '}
             <code>cr</code>, <code>cc</code>, <code>cc1h</code>,{' '}
-            <code>img</code>, <code>img_o</code>, <code>ai</code>,{' '}
-            <code>ao</code>
+            <code>cc12h</code>, <code>img</code>, <code>img_o</code>,{' '}
+            <code>ai</code>, <code>ao</code>
           </div>
           <div>
             {t('Functions')}: <code>tier(name, value)</code>, <code>max</code>,{' '}
@@ -1366,6 +1366,7 @@ function CostEstimator({ effectiveExpr }: EstimatorProps) {
     cacheReadTokens: 0,
     cacheCreateTokens: 0,
     cacheCreate1hTokens: 0,
+    cacheCreate12hTokens: 0,
     imageTokens: 0,
     imageOutputTokens: 0,
     audioInputTokens: 0,
