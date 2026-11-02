@@ -320,7 +320,7 @@ func (channel *Channel) ImageJobProvider() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if (provider != "kie" && provider != "apimart") || (family != "flare" && family != "sunburst") {
+	if (provider != "kie" && provider != "apimart" && provider != "sub2api") || (family != "flare" && family != "sunburst") {
 		return "", "", errors.New("异步图片提供方或模型家族无效")
 	}
 	return provider, family, nil

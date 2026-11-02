@@ -38,8 +38,11 @@ func imageJobServiceFixture(t *testing.T, handler http.HandlerFunc) (*ImageJobSe
 	model.LOG_DB = db
 	require.NoError(t, db.AutoMigrate(&model.ImageJob{}, &model.ImageJobProjection{}, &model.ImageJobLogReceipt{}, &model.Token{}, &model.User{}, &model.Channel{}, &model.Ability{}, &model.TokenModelChannel{}, &model.ChannelModelDisabled{}, &model.Log{}))
 	t.Cleanup(func() { model.DB = previousDB; model.LOG_DB = previousLog; require.NoError(t, sqlDB.Close()) })
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := &httptest.Server{URL: "http://adapter.example"}
+	if handler != nil {
+		server = httptest.NewServer(handler)
+		t.Cleanup(server.Close)
+	}
 	user := model.User{Id: 1, Username: "test-images", Status: common.UserStatusEnabled, Group: "default", Quota: 5000000}
 	require.NoError(t, db.Create(&user).Error)
 	token := &model.Token{Id: 2, UserId: 1, Key: "images-key", Status: common.TokenStatusEnabled, ExpiredTime: -1, Group: "default", RemainQuota: 1000000}
@@ -355,4 +358,110 @@ func TestImageJobUnknownExpirationNeverReleasesReservation(t *testing.T) {
 	require.NoError(t, model.DB.First(token, token.Id).Error)
 	assert.Equal(t, 850000, token.RemainQuota)
 	assert.Equal(t, int32(1), posts.Load())
+}
+
+func TestImageJobSub2APIResultRatioAndRejectionContract(t *testing.T) {
+	for _, tc := range []struct {
+		ratio         string
+		width, height int
+		valid         bool
+	}{
+		{"1:1", 1254, 1254, true}, {"16:9", 1672, 941, true}, {"4:3", 1448, 1086, true}, {"auto", 1536, 1024, true},
+		{"1:1", 1030, 1000, true}, {"1:1", 1031, 1000, false}, {"16:9", 1254, 1254, false},
+	} {
+		t.Run(fmt.Sprintf("%s-%dx%d", tc.ratio, tc.width, tc.height), func(t *testing.T) {
+			_, format, err := ValidateImageJobResult(imageJobPNG(t, tc.width, tc.height), model.ImageJobRequest{Size: tc.ratio, Resolution: "1k"}, "sub2api")
+			if tc.valid {
+				require.NoError(t, err)
+				assert.Equal(t, "png", format)
+			} else {
+				require.EqualError(t, err, "image_resolution_mismatch")
+			}
+		})
+	}
+	assert.True(t, imageJobDefinitelyNotAccepted("sub2api_submit_rejected"))
+	assert.True(t, imageJobDefinitelyNotAccepted("sub2api_hourly_limit"))
+	assert.False(t, imageJobDefinitelyNotAccepted("image_submission_unknown"))
+	_, _, err := ValidateImageJobResult([]byte("invalid"), model.ImageJobRequest{Size: "auto", Resolution: "1k"}, "sub2api")
+	require.EqualError(t, err, "image_result_invalid")
+}
+
+func TestImageJobSub2APIFailoverToKieChargesOnce(t *testing.T) {
+	for _, code := range []string{"sub2api_submit_rejected", "sub2api_ratio_mismatch"} {
+		t.Run(code, func(t *testing.T) {
+			s, token, _ := imageJobServiceFixture(t, nil)
+			for _, table := range []any{&model.TokenModelChannel{}, &model.Ability{}, &model.Channel{}} {
+				require.NoError(t, model.DB.Where("1 = 1").Delete(table).Error)
+			}
+			for i, provider := range []string{"apimart", "sub2api", "kie"} {
+				id := []int{204, 205, 203}[i]
+				name := "twork-image-sunburst-async"
+				ch := model.Channel{Id: id, Status: common.ChannelStatusEnabled, Key: "test", Models: name, Group: "default", BaseURL: common.GetPointer("http://adapter.example/" + provider), Priority: common.GetPointer(int64(400 - i*100)), Setting: common.GetPointer(`{"twork_runtime":"image_async","twork_image_provider":"` + provider + `","twork_image_family":"sunburst"}`)}
+				require.NoError(t, model.DB.Create(&ch).Error)
+				require.NoError(t, model.DB.Create(&model.Ability{Group: "default", Model: name, ChannelId: id, Enabled: true}).Error)
+				require.NoError(t, model.DB.Create(&model.TokenModelChannel{TokenId: token.Id, ModelId: name, ChannelId: id}).Error)
+			}
+			picture := imageJobPNG(t, 1024, 1024)
+			paths := []string{}
+			var adapterID string
+			s.Client = &http.Client{Transport: claudeAgentProbeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				w := httptest.NewRecorder()
+				if strings.HasSuffix(req.URL.Path, "/result") {
+					w.Write(picture)
+					return w.Result(), nil
+				}
+				status := 200
+				if req.Method == "POST" {
+					var body map[string]any
+					require.NoError(t, common.DecodeJson(req.Body, &body))
+					adapterID = body["job_id"].(string)
+					paths = append(paths, req.URL.Path)
+					status = 202
+				}
+				result := map[string]any{"id": adapterID, "status": "failed", "retryable": true, "error_code": "apimart_submit_rejected", "provider_task_id": ""}
+				if strings.HasPrefix(req.URL.Path, "/sub2api/") {
+					result["error_code"] = code
+					if req.Method == "POST" {
+						result["status"] = "submitting"
+						result["retryable"] = false
+						result["error_code"] = ""
+					}
+				}
+				if strings.HasPrefix(req.URL.Path, "/kie/") {
+					result = map[string]any{"id": adapterID, "status": "succeeded", "image_count": 1, "provider_task_id": "kie-accepted"}
+				}
+				imageJobJSON(w, status, result)
+				return w.Result(), nil
+			})}
+			job, _, err := s.Create(context.Background(), token.Id, model.ImageJobRequest{ClientRequestID: "fallback", ClientSessionID: "s", Prompt: "image", Size: "1:1", Resolution: "1k"})
+			require.NoError(t, err)
+			for _, id := range []int{204, 205} {
+				require.NoError(t, s.RunOnce(context.Background()))
+				if id == 205 {
+					submitting, err := model.GetImageJob(context.Background(), token.Id, job.ID)
+					require.NoError(t, err)
+					assert.Equal(t, "running", submitting.Status)
+					assert.Empty(t, submitting.ProviderTaskID)
+					require.NoError(t, s.RunOnce(context.Background()))
+				}
+				current, err := model.GetImageJob(context.Background(), token.Id, job.ID)
+				require.NoError(t, err)
+				assert.Equal(t, id, current.ChannelID)
+				assert.Equal(t, "queued", current.Status)
+				assert.Empty(t, current.ProviderTaskID)
+				assert.Zero(t, current.ChargedQuota)
+			}
+			require.NoError(t, s.RunOnce(context.Background()))
+			require.NoError(t, s.RunOnce(context.Background()))
+			current, err := model.GetImageJob(context.Background(), token.Id, job.ID)
+			require.NoError(t, err)
+			assert.Equal(t, 203, current.ChannelID)
+			assert.Equal(t, "succeeded", current.Status)
+			assert.Equal(t, 150000, current.ChargedQuota)
+			assert.Equal(t, []string{"/apimart/v1/image-tasks", "/sub2api/v1/image-tasks", "/kie/v1/image-tasks"}, paths)
+			var count int64
+			require.NoError(t, model.LOG_DB.Model(&model.Log{}).Where("request_id = ?", "imagejob_"+job.ID).Count(&count).Error)
+			assert.Equal(t, int64(1), count)
+		})
+	}
 }

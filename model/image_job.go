@@ -305,6 +305,9 @@ func imageJobChannels(db *gorm.DB, tokenID int, r ImageJobRequest) ([]*Channel, 
 		if !stringsIn(strings.Split(ch.Models, ","), channelModel) || !stringsIn(strings.Split(ch.Group, ","), group) || ch.BaseURL == nil || *ch.BaseURL == "" || ch.Key == "" || ch.ChannelInfo.IsMultiKey {
 			continue
 		}
+		if provider == "sub2api" && (r.Resolution != "1k" || len(r.ImageURLs) != 0 || r.MaskURL != "" || r.Quality != "" || r.OutputCompression != nil || !stringsIn([]string{"", "png"}, r.OutputFormat) || r.Background == "transparent" || !common.Sub2APIImageRatio(r.Size)) {
+			continue
+		}
 		if provider == "kie" && (r.MaskURL != "" || r.Quality != "" || !stringsIn([]string{"", "png", "jpeg"}, r.OutputFormat) || r.OutputCompression != nil || !ImageJobKieSize(r.Size)) {
 			continue
 		}

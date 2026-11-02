@@ -313,3 +313,45 @@ func TestImageJobSunburstPreferredAtEveryResolutionWithAuthorizedFlareFallback(t
 		})
 	}
 }
+
+func TestImageJobSub2APICandidatesAndFamilyPriority(t *testing.T) {
+	token, _ := imageJobFixture(t)
+	name := "twork-image-sunburst-async"
+	for _, c := range []struct {
+		id       int
+		provider string
+		priority int64
+	}{{204, "apimart", 400}, {205, "sub2api", 300}, {203, "kie", 200}} {
+		channel := Channel{Id: c.id, Status: common.ChannelStatusEnabled, Models: name, Group: "default", Key: "test", BaseURL: common.GetPointer("http://127.0.0.1:8320/sub2api-async"), Priority: common.GetPointer(c.priority), Setting: common.GetPointer(`{"twork_runtime":"image_async","twork_image_provider":"` + c.provider + `","twork_image_family":"sunburst"}`)}
+		require.NoError(t, DB.Create(&channel).Error)
+		require.NoError(t, DB.Create(&Ability{Group: "default", Model: name, ChannelId: c.id, Enabled: true}).Error)
+		require.NoError(t, DB.Create(&TokenModelChannel{TokenId: token.Id, ModelId: name, ChannelId: c.id}).Error)
+	}
+	for _, res := range []string{"1k", "2k", "4k"} {
+		channels, err := ImageJobChannels(context.Background(), token.Id, ImageJobRequest{Resolution: res, Size: "1:1"})
+		require.NoError(t, err)
+		ids := []int{}
+		for _, ch := range channels {
+			ids = append(ids, ch.Id)
+		}
+		if res == "1k" {
+			require.GreaterOrEqual(t, len(ids), 3)
+			assert.Equal(t, []int{204, 205, 203}, ids[:3])
+		} else {
+			assert.NotContains(t, ids, 205)
+		}
+	}
+	for _, r := range []ImageJobRequest{
+		{ImageURLs: []string{"https://example.com/a.png"}}, {MaskURL: "mask"}, {Quality: "low"}, {OutputFormat: "webp"}, {OutputCompression: common.GetPointer(0)}, {Background: "transparent"}, {Size: "21:9"},
+	} {
+		r.Resolution = "1k"
+		if r.Size == "" {
+			r.Size = "1:1"
+		}
+		channels, err := ImageJobChannels(context.Background(), token.Id, r)
+		require.NoError(t, err)
+		for _, ch := range channels {
+			assert.NotEqual(t, 205, ch.Id)
+		}
+	}
+}

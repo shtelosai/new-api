@@ -12,6 +12,16 @@
     "retention_hours": 168
   },
   "providers": {
+    "sub2api-async": {
+      "adapter": "sub2api",
+      "base_url": "https://sub2api.example.com",
+      "api_key_env": "SUB2API_API_KEY",
+      "auth_token_env": "IMAGE_ADAPTER_SUB2API_ASYNC_TOKEN",
+      "async_enabled": true,
+      "max_per_hour": 60,
+      "max_concurrent": 2,
+      "models": ["gpt-image-2.5-sunburst"]
+    },
     "apimart": {
       "adapter": "apimart",
       "base_url": "https://api.apimart.ai/v1",

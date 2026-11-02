@@ -48,6 +48,38 @@ New API 新增类型 1 渠道：Base URL `http://100.88.103.99:8320/apimart`，�
 
 ## 新版持久异步任务（默认关闭）
 
+### sub2api 1K 备用路由
+
+`config.async.example.json` 的 `sub2api-async` 是可选路由，示例域名须替换为自建服务。
+`base_url` 填站点根地址（不带 `/v1`），只调用同步 `POST /v1/images/generations`，
+不依赖上游 async 接口或对象存储。密钥仅通过 `api_key_env` 注入；网关使用
+`auth_token_env` 对应的独立内部令牌，不使用订阅账号密钥。
+
+仅接受 1K 文生图：无参考图、蒙版、quality、output_compression，格式为空或 png，
+背景非 transparent。比例支持 auto、1:1、3:2、2:3、4:3、3:4、16:9、9:16；
+非 auto 会在原提示词末尾追加中英文构图比例，不改写原文。上游忽略尺寸等参数，
+所以按完整解码及 3% 比例容差校验，不使用 APIMart/Kie 像素表，也不缩放图片。
+
+`max_per_hour` 是每路由滚动一小时的本地接收上限，省略或 0 默认 60，负数拒绝启动。
+额度在 SQLite 创建任务的同一事务内预留，包含排队、失败和 unknown 任务，重启不会重置；
+同 ID 重放不重复计数。达到上限返回可重试 `sub2api_hourly_limit`，未调用上游。
+不要用多个路由别名或多个独立数据目录绕过同一订阅的限额。
+
+同步上游调用在独立 goroutine 中运行，不占用 runOnce 的普通任务推进 worker。
+`max_concurrent` 为每路由并发上限，省略或 0 默认 2，允许 1–32；满载任务仍排队，
+不会挡住 Kie/APIMart 的轮询与下载。创建立即返回本地任务，生成期间状态 submitting。
+进程内在途集合避免轮询误判；Close 取消请求并等待调用及状态持久化，再关闭数据库。
+
+订阅账号不按张向供应商付费：网络错误、超时、任意非 200、无效响应/图片统一返回
+可回退的 `sub2api_submit_rejected`；完整解码后、写入结果 ID 前校验比例，不符返回
+可回退的 `sub2api_ratio_mismatch`。两种错误的 provider_task_id 均为空，网关只对
+最终成功任务扣一次费。下载阶段仍保留解码和比例校验作为兜底。
+唯一例外是进程重启遗留 submitting：没有本进程在途记录的任务变为 unknown，绝不重发。
+已保存的结果文件可重启恢复；本地文件原子写入既有 results 目录，下载不走公网 URL，
+不放宽 HTTPS 下载校验。
+
+本改动无网关 DDL，不改变旧同步接口或 Kie/APIMart 协议。
+
 新增协议与上面的旧同步兼容协议分开。原 `config.example.json` 无需修改，旧 generations/edits、并发配额、超时和返回结构均保持原样。`config.async.example.json` 提供独立 Kie/APIMart 路由；只有 `async.enabled=true` 且对应供应商 `async_enabled=true` 时开放新接口。部署应在保留现有配置的基础上合并新增项，不能直接覆盖旧渠道配置。
 
 | 方法 | 路径 | 结果 |

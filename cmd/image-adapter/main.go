@@ -26,6 +26,8 @@ import (
 var revision = "dev"
 
 type ProviderConfig struct {
+	MaxConcurrent int      `json:"max_concurrent,omitempty"`
+	MaxPerHour    int      `json:"max_per_hour,omitempty"`
 	Adapter       string   `json:"adapter"`
 	BaseURL       string   `json:"base_url"`
 	APIKeyEnv     string   `json:"api_key_env"`
@@ -98,6 +100,16 @@ func configuredServer(config Config) (*Server, error) {
 		case "apimart":
 			p := &APIMart{BaseURL: base, Key: key, Client: client}
 			provider, asyncProvider = p, p
+		case "sub2api":
+			if p.MaxPerHour < 0 || p.MaxConcurrent < 0 || p.MaxConcurrent > 32 || p.SyncEnabled {
+				return nil, fmt.Errorf("sub2api 配额无效或启用了同步路由")
+			}
+			limit := p.MaxPerHour
+			if limit == 0 {
+				limit = 60
+			}
+			transport.ResponseHeaderTimeout = 180 * time.Second
+			asyncProvider = &Sub2API{BaseURL: base, Key: key, Client: client, MaxPerHour: limit, MaxConcurrent: p.MaxConcurrent}
 		case "kie":
 			uploadBase := strings.TrimRight(p.UploadBaseURL, "/")
 			if uploadBase == "" {

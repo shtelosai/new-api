@@ -241,6 +241,7 @@ func ImageJobCapabilities(ctx context.Context, tokenID int) map[string]any {
 	resolutions := []string{}
 	sizeSet := map[string]bool{}
 	mask := false
+	edit := false
 	for _, res := range []string{"1k", "2k", "4k"} {
 		channels, err := model.ImageJobChannels(ctx, tokenID, model.ImageJobRequest{Resolution: res, Size: "1:1", Background: "opaque"})
 		if err != nil {
@@ -253,9 +254,12 @@ func ImageJobCapabilities(ctx context.Context, tokenID int) map[string]any {
 		for _, ch := range channels {
 			provider, _, _ := ch.ImageJobProvider()
 			for _, size := range model.ImageJobSizes {
-				if provider != "kie" || model.ImageJobKieSize(size) {
+				if (provider != "kie" || model.ImageJobKieSize(size)) && (provider != "sub2api" || common.Sub2APIImageRatio(size)) {
 					sizeSet[size] = true
 				}
+			}
+			if provider != "sub2api" {
+				edit = true
 			}
 			if provider == "apimart" {
 				mask = true
@@ -271,7 +275,7 @@ func ImageJobCapabilities(ctx context.Context, tokenID int) map[string]any {
 	capabilities["async"] = len(resolutions) > 0
 	capabilities["resolutions"] = resolutions
 	capabilities["sizes"] = sizes
-	capabilities["supports"] = map[string]bool{"edit": len(resolutions) > 0, "mask": mask, "transparent": len(resolutions) > 0}
+	capabilities["supports"] = map[string]bool{"edit": edit, "mask": mask, "transparent": edit}
 	return capabilities
 }
 
@@ -296,6 +300,9 @@ func ValidateImageJobResult(data []byte, r model.ImageJobRequest, provider strin
 		if !ok || opaque.Opaque() {
 			return "", "", errors.New("image_transparency_mismatch")
 		}
+	}
+	if provider == "sub2api" && (r.Resolution != "1k" || !common.Sub2APIImageSizeMatches(r.Size, cfg.Width, cfg.Height)) {
+		return "", "", errors.New("image_resolution_mismatch")
 	}
 	actual := fmt.Sprintf("%dx%d", cfg.Width, cfg.Height)
 	if provider == "apimart" {

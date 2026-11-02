@@ -202,7 +202,7 @@ func (s *ImageJobService) submit(ctx context.Context, job *model.ImageJob, r mod
 
 func imageJobDefinitelyNotAccepted(code string) bool {
 	switch code {
-	case "apimart_submit_rejected", "kie_submit_rejected", "image_input_unavailable", "image_upload_failed", "unsupported_image_options":
+	case "sub2api_ratio_mismatch", "sub2api_submit_rejected", "sub2api_hourly_limit", "apimart_submit_rejected", "kie_submit_rejected", "image_input_unavailable", "image_upload_failed", "unsupported_image_options":
 		return true
 	}
 	return false
@@ -240,7 +240,7 @@ func (s *ImageJobService) applyStatus(ctx context.Context, job *model.ImageJob, 
 			return errors.New("图片结果暂不可下载")
 		}
 		provider := job.ImageProvider
-		if provider != "kie" && provider != "apimart" {
+		if provider != "kie" && provider != "apimart" && provider != "sub2api" {
 			return errors.New("图片原始提供方记录无效")
 		}
 		actual, format, err := ValidateImageJobResult(picture, r, provider)

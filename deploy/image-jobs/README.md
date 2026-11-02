@@ -25,6 +25,25 @@ TWORK_IMAGE_TASKS_DATA_DIR=/var/lib/new-api/image-jobs
 
 ## 专用渠道
 
+可选的 sub2api 1K 备用渠道（不新增 DDL）：类型 1、启用、单密钥，模型
+`twork-image-sunburst-async`，priority=300，Base URL 指向独立异步适配器
+`http://<internal-adapter>:8321/sub2api-async`，key 使用适配器内部令牌。
+setting 示例：
+
+```json
+{"twork_runtime":"image_async","twork_image_provider":"sub2api","twork_image_family":"sunburst"}
+```
+
+仍须配置既有付款分组、enabled ability、token 模型白名单及精确模型/渠道授权，
+不得仅添加渠道就绕过正式权限同步。`image_provider` 任务列记录 `sub2api`，现有 varchar(16) 足够。
+该候选仅接 1K、无参考图/蒙版/quality/压缩、空或 png 格式、非透明背景及标准八种比例；
+capabilities 不据此增加编辑、蒙版、透明背景或额外档位。结果完整解码后按请求比例 3% 校验，
+auto 不限制比例。不改现有排序：sunburst 家族优先，再按 priority 降序；因此现有
+APIMart 204(400) → sub2api(300) → Kie 203(200) → flare 家族。
+上限错误 `sub2api_hourly_limit`、生成失败 `sub2api_submit_rejected` 和比例不符
+`sub2api_ratio_mismatch` 可回退；订阅生成失败包含网络错误、超时、非 200 和无效图片，
+仅重启遗留的在途调用保持 unknown、不回退。本节是新增路由配置说明，不授权执行下方部署或数据库脚本。
+
 | 提供方 | family | 公开模型 | 优先级 |
 |---|---|---|---|
 | Kie | flare | twork-image-flare-async | 200 |

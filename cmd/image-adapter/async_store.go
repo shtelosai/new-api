@@ -81,6 +81,9 @@ type AsyncManager struct {
 	cancel      context.CancelFunc
 	loop        sync.WaitGroup
 	process     sync.Mutex
+	subMu       sync.Mutex
+	subCalls    sync.WaitGroup
+	subActive   map[string]string
 	start       sync.Once
 	close       sync.Once
 	closeErr    error
@@ -132,7 +135,13 @@ func openAsyncManager(config AsyncConfig, routes map[string]Route, client *http.
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &AsyncManager{db: db, config: config, routes: routes, client: client, interval: interval, lock: lock, ctx: ctx, cancel: cancel}, nil
+	manager := &AsyncManager{subActive: make(map[string]string), db: db, config: config, routes: routes, client: client, interval: interval, lock: lock, ctx: ctx, cancel: cancel}
+	for name, route := range routes {
+		if p, ok := route.AsyncProvider.(*Sub2API); ok {
+			p.manager, p.route = manager, name
+		}
+	}
+	return manager, nil
 }
 
 func (m *AsyncManager) Start() {
@@ -164,6 +173,7 @@ func (m *AsyncManager) Close() error {
 		m.loop.Wait()
 		m.process.Lock()
 		defer m.process.Unlock()
+		m.subCalls.Wait()
 		db, err := m.db.DB()
 		if err == nil {
 			err = db.Close()
@@ -214,6 +224,20 @@ func (m *AsyncManager) create(route string, request *AsyncRequest) (*asyncTask, 
 		if !errors.Is(find, gorm.ErrRecordNotFound) {
 			return find
 		}
+		if p, ok := provider.(*Sub2API); ok {
+			limit := p.MaxPerHour
+			if limit <= 0 {
+				limit = 60
+			}
+			var count int64
+			if err := tx.Model(&asyncTask{}).Where("route = ? AND created_at > ?", route, time.Now().Add(-time.Hour).Unix()).Count(&count).Error; err != nil {
+				return err
+			}
+			if count >= int64(limit) {
+				apiErr = asyncError(429, "sub2api_hourly_limit", "本渠道每小时配额已满，尚未受理", true)
+				return nil
+			}
+		}
 		var pending int64
 		if err := tx.Model(&asyncTask{}).Where("status IN ? OR (status = ? AND provider_task_id <> ? AND deadline_at > ?)", []string{"queued", "submitting", "running", "downloading"}, "unknown", "", time.Now().Unix()).Count(&pending).Error; err != nil {
 			return err
@@ -244,10 +268,43 @@ func (m *AsyncManager) runOnce(ctx context.Context) error {
 		}
 		m.lastCleanup = time.Now()
 	}
-	var tasks []asyncTask
-	if err := m.db.Where("expired = ? AND (status IN ? OR (status = ? AND provider_task_id <> ? AND deadline_at > ?))", false, []string{"queued", "submitting", "running", "downloading"}, "unknown", "", time.Now().Unix()).Order("updated_at ASC, key ASC").Limit(m.config.Workers).Find(&tasks).Error; err != nil {
+	if m.ctx.Err() != nil {
+		return m.ctx.Err()
+	}
+	m.subMu.Lock()
+	var candidates []asyncTask
+	if err := m.db.Select("key", "route", "status").Where("expired = ? AND (status IN ? OR (status = ? AND provider_task_id <> ? AND deadline_at > ?))", false, []string{"queued", "submitting", "running", "downloading"}, "unknown", "", time.Now().Unix()).Order("updated_at ASC, key ASC").Find(&candidates).Error; err != nil {
+		m.subMu.Unlock()
 		return err
 	}
+	var keys []string
+	counts := map[string]int{}
+	for _, route := range m.subActive {
+		counts[route]++
+	}
+	for _, task := range candidates {
+		if _, active := m.subActive[task.Key]; active {
+			continue
+		}
+		if p, ok := m.routes[task.Route].AsyncProvider.(*Sub2API); ok && task.Status == "queued" {
+			if counts[task.Route] >= p.concurrency() {
+				continue
+			}
+			counts[task.Route]++
+		}
+		keys = append(keys, task.Key)
+		if len(keys) == m.config.Workers {
+			break
+		}
+	}
+	var tasks []asyncTask
+	if len(keys) > 0 {
+		if err := m.db.Where("key IN ?", keys).Find(&tasks).Error; err != nil {
+			m.subMu.Unlock()
+			return err
+		}
+	}
+	m.subMu.Unlock()
 	var wg sync.WaitGroup
 	errorsOut := make(chan error, len(tasks))
 	for i := range tasks {
@@ -290,6 +347,9 @@ func (m *AsyncManager) advance(ctx context.Context, task *asyncTask) error {
 		return m.fail(task, "image_route_unavailable", task.Status != "queued", task.Status == "queued")
 	}
 	if time.Now().Unix() >= task.DeadlineAt {
+		if _, local := route.AsyncProvider.(*Sub2API); local && task.Status == "queued" {
+			return m.fail(task, "sub2api_submit_rejected", false, true)
+		}
 		return m.fail(task, "image_task_timeout", task.Status != "queued", task.Status == "queued")
 	}
 	switch task.Status {
@@ -300,6 +360,18 @@ func (m *AsyncManager) advance(ctx context.Context, task *asyncTask) error {
 		}
 		if !route.Models[request.Model] {
 			return m.fail(task, "image_model_unavailable", false, true)
+		}
+		if p, ok := route.AsyncProvider.(*Sub2API); ok {
+			task.Status = "submitting"
+			if err := m.save(task); err != nil {
+				return err
+			}
+			m.subMu.Lock()
+			m.subActive[task.Key] = task.Route
+			m.subCalls.Add(1)
+			m.subMu.Unlock()
+			go m.submitSub2API(p, *task, request)
+			return nil
 		}
 		opCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 		defer cancel()
@@ -350,6 +422,11 @@ func (m *AsyncManager) advance(ctx context.Context, task *asyncTask) error {
 			task.ErrorCode = ""
 			return m.save(task)
 		}
+		if _, local := route.AsyncProvider.(*Sub2API); local {
+			task.Status = "downloading"
+			task.ErrorCode = ""
+			return m.save(task)
+		}
 		if len(result.URLs) != 1 || !validPublicImageURL(result.URLs[0]) {
 			return m.fail(task, "image_result_invalid", false, false)
 		}
@@ -362,17 +439,33 @@ func (m *AsyncManager) advance(ctx context.Context, task *asyncTask) error {
 		task.ErrorCode = ""
 		return m.save(task)
 	case "downloading":
-		var urls []string
-		if common.Unmarshal(task.ResultURLs, &urls) != nil || len(urls) != 1 || !validPublicImageURL(urls[0]) {
-			return m.fail(task, "image_result_invalid", false, false)
-		}
-		downloadCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		status, picture, err := boundedRequest(downloadCtx, m.client, "GET", urls[0], "", "", nil, 64<<20)
-		if err != nil || status != 200 {
-			task.Status = "running"
-			task.ErrorCode = "image_result_download_pending"
-			return m.save(task)
+		var picture []byte
+		var err error
+		if _, local := route.AsyncProvider.(*Sub2API); local {
+			if task.ProviderTaskID != task.Key {
+				return m.fail(task, "image_result_invalid", false, false)
+			}
+			picture, err = os.ReadFile(filepath.Join(m.config.DataDir, "results", task.Key))
+			if err != nil {
+				return m.fail(task, "image_status_unknown", true, false)
+			}
+			if len(picture) == 0 || len(picture) > 64<<20 {
+				return m.fail(task, "image_result_invalid", false, false)
+			}
+		} else {
+			var urls []string
+			if common.Unmarshal(task.ResultURLs, &urls) != nil || len(urls) != 1 || !validPublicImageURL(urls[0]) {
+				return m.fail(task, "image_result_invalid", false, false)
+			}
+			downloadCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			var status int
+			status, picture, err = boundedRequest(downloadCtx, m.client, "GET", urls[0], "", "", nil, 64<<20)
+			if err != nil || status != 200 {
+				task.Status = "running"
+				task.ErrorCode = "image_result_download_pending"
+				return m.save(task)
+			}
 		}
 		config, format, err := image.DecodeConfig(bytes.NewReader(picture))
 		if err != nil || !validImageDimensions(config) || (format != "png" && format != "jpeg" && format != "webp") {
@@ -406,6 +499,9 @@ func (m *AsyncManager) advance(ctx context.Context, task *asyncTask) error {
 			}
 		}
 		if _, isKie := route.AsyncProvider.(*Kie); isKie && !kieNativeSizeMatches(request.Size, request.Resolution, config.Width, config.Height) {
+			return m.fail(task, "image_resolution_mismatch", false, false)
+		}
+		if _, local := route.AsyncProvider.(*Sub2API); local && !common.Sub2APIImageSizeMatches(request.Size, config.Width, config.Height) {
 			return m.fail(task, "image_resolution_mismatch", false, false)
 		}
 		if err = m.writeResult(task.Key, picture); err != nil {
@@ -499,4 +595,33 @@ func apimartNativeSize(ratio, resolution string) (string, bool) {
 	index, ok := map[string]int{"1k": 0, "2k": 1, "4k": 2}[resolution]
 	values, known := sizes[ratio]
 	return values[index], ok && known
+}
+
+// submitSub2API owns its task until the final durable update. runOnce snapshots
+// active keys under the same lock so it cannot advance an obsolete task copy.
+func (m *AsyncManager) submitSub2API(p *Sub2API, task asyncTask, request AsyncRequest) {
+	defer m.subCalls.Done()
+	deadline := time.Now().Add(180 * time.Second)
+	if expiry := time.Unix(task.DeadlineAt, 0); expiry.Before(deadline) {
+		deadline = expiry
+	}
+	ctx, cancel := context.WithDeadline(m.ctx, deadline)
+	defer cancel()
+	id, problem := p.SubmitTask(ctx, &request)
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	defer delete(m.subActive, task.Key)
+	var err error
+	if problem != nil {
+		err = m.fail(&task, problem.Code, problem.Unknown, problem.Retryable)
+	} else {
+		task.ProviderTaskID = id
+		task.Status = "running"
+		task.ErrorCode = ""
+		task.Retryable = false
+		err = m.save(&task)
+	}
+	if err != nil {
+		log.Print("sub2api task persistence failed; preserve submitting state without replay")
+	}
 }
