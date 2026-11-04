@@ -559,7 +559,9 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	diagnosticResponse := common2.ObserveClaudeDiagnosticAttempt(c, req, info.ChannelId, info.UpstreamModelName)
 	resp, err := client.Do(req)
+	diagnosticResponse(resp, err)
 	if err != nil {
 		if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
 			logger.LogInfo(c, "upstream request canceled: "+err.Error())
