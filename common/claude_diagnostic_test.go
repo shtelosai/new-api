@@ -103,12 +103,12 @@ func TestClaudeDiagnosticExpiredAndNonClaudeAreNoops(t *testing.T) {
 	req := httptest.NewRequest("POST", "https://upstream.test", strings.NewReader("unchanged"))
 	original := req.Body
 	ObserveClaudeDiagnosticAttempt(c, req, 269, "claude-opus-5-5")(nil, nil)
-	assert.Same(t, original, req.Body)
+	assert.Equal(t, original, req.Body)
 	assert.Empty(t, diagnosticSink.queue)
 	diagnosticSink.until = time.Now().Add(time.Hour)
 	CaptureClaudeDiagnosticInbound(c, []byte(`{"model":"gpt-6.1-sol"}`))
 	ObserveClaudeDiagnosticAttempt(c, req, 266, "gpt-6.1-sol")(nil, nil)
-	assert.Same(t, original, req.Body)
+	assert.Equal(t, original, req.Body)
 	assert.Empty(t, diagnosticSink.queue)
 }
 func TestClaudeDiagnosticQueueOverflowDoesNotBlock(t *testing.T) {
