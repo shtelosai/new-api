@@ -481,6 +481,11 @@ func TestRecalculate_PositiveDelta(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 
+	task.PrivateData.TworkUsage = common.TworkUsage{Turn: "0123456789abcdef0123456789abcdef", Session: "fedcba9876543210fedcba9876543210"}
+	require.NoError(t, task.Insert())
+	var reloaded model.Task
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	task = &reloaded
 	RecalculateTaskQuota(ctx, task, actualQuota, "adaptor adjustment")
 
 	// User quota should decrease by the delta (1000 additional charge)
@@ -497,6 +502,10 @@ func TestRecalculate_PositiveDelta(t *testing.T) {
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeConsume, log.Type)
 	assert.Equal(t, actualQuota-preConsumed, log.Quota)
+	assert.Equal(t, task.PrivateData.TworkUsage.Turn, log.TworkTurn)
+	var other map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+	assert.Equal(t, task.PrivateData.TworkUsage.Session, other["twork_session"])
 }
 
 func TestRecalculate_NegativeDelta(t *testing.T) {

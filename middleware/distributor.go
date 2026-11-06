@@ -42,6 +42,7 @@ func deleteCoolingAffinityBinding(c *gin.Context) bool {
 
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
+		CaptureTworkUsage(c)
 		var channel *model.Channel
 		useSoftFailureCooldown := false
 		selectedByRouting := false

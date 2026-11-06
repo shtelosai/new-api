@@ -82,6 +82,7 @@ type Log struct {
 	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
 	ConversationHash  string `json:"conversation_hash,omitempty" gorm:"type:char(32);index:idx_logs_channel_created_conversation,priority:3;default:''"`
 	Other             string `json:"other"`
+	TworkTurn         string `json:"twork_turn" gorm:"type:char(32);not null;default:''"`
 }
 
 // don't use iota, avoid change log type value
@@ -391,7 +392,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
-	otherStr := common.MapToJsonStr(params.Other)
+	usage := common.GetTworkUsage(c)
+	otherStr := common.MapToJsonStr(usage.AddToOther(params.Other))
 	// 判断是否需要记录 IP
 	needRecordIp := false
 	if settingMap, err := GetUserSetting(userId, false); err == nil {
@@ -425,6 +427,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		UpstreamRequestId: upstreamRequestId,
 		ConversationHash:  common.GetContextKeyString(c, constant.ContextKeyConversationHash),
 		Other:             otherStr,
+		TworkTurn:         usage.Turn,
 	}
 	err := createLog(log)
 	if err != nil {
@@ -447,16 +450,17 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 }
 
 type RecordTaskBillingLogParams struct {
-	UserId    int
-	LogType   int
-	Content   string
-	ChannelId int
-	ModelName string
-	Quota     int
-	TokenId   int
-	Group     string
-	Other     map[string]interface{}
-	NodeName  string // 任务发起节点；为空时回退当前节点
+	TworkUsage common.TworkUsage
+	UserId     int
+	LogType    int
+	Content    string
+	ChannelId  int
+	ModelName  string
+	Quota      int
+	TokenId    int
+	Group      string
+	Other      map[string]interface{}
+	NodeName   string // 任务发起节点；为空时回退当前节点
 }
 
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
@@ -483,7 +487,8 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		ChannelId: params.ChannelId,
 		TokenId:   params.TokenId,
 		Group:     params.Group,
-		Other:     common.MapToJsonStr(params.Other),
+		Other:     common.MapToJsonStr(params.TworkUsage.AddToOther(params.Other)),
+		TworkTurn: params.TworkUsage.Turn,
 	}
 	err := createLog(log)
 	if err != nil {

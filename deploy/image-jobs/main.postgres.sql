@@ -31,6 +31,7 @@ CREATE TABLE image_jobs (
   next_poll_at BIGINT NOT NULL DEFAULT 0,
   lease_owner VARCHAR(64) NOT NULL DEFAULT '',
   lease_until BIGINT NOT NULL DEFAULT 0,
+  usage_metadata VARCHAR(256) NOT NULL DEFAULT '',
   CONSTRAINT idx_image_job_request UNIQUE (token_id, client_request_id)
 );
 CREATE INDEX idx_image_job_token_session ON image_jobs (token_id, client_session_id);

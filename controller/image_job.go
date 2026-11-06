@@ -64,6 +64,7 @@ func CreateImageJob(c *gin.Context) {
 		imageJobError(c, 400, "image_invalid_request", err.Error())
 		return
 	}
+	request.TworkUsage = common.GetTworkUsage(c)
 	job, _, err := s.Create(c.Request.Context(), c.GetInt(middleware.ImageJobTokenKey), request, c.GetHeader("X-Twork-Image-Replay-Only") == "true")
 	if err != nil {
 		imageJobModelError(c, err)

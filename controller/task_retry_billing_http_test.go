@@ -118,6 +118,8 @@ func TestTaskRetryBillingLocalHTTP(t *testing.T) {
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, gateway.URL+"/v1/videos", strings.NewReader(`{"model":"task-retry-audit","prompt":"test video","seconds":"4","size":"720x1280"}`))
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Twork-Turn", "0123456789abcdef0123456789abcdef")
+			req.Header.Set("X-Twork-Session", "fedcba9876543210fedcba9876543210")
 			resp, err := gateway.Client().Do(req)
 			require.NoError(t, err)
 			defer resp.Body.Close()
@@ -169,6 +171,9 @@ func TestTaskRetryBillingLocalHTTP(t *testing.T) {
 				assert.Equal(t, channels[1].Id, tasks[0].ChannelId)
 				require.Len(t, logs, 1)
 				assert.Equal(t, tc.want, logs[0].Quota)
+				assert.Equal(t, "0123456789abcdef0123456789abcdef", logs[0].TworkTurn)
+				assert.Equal(t, logs[0].TworkTurn, tasks[0].PrivateData.TworkUsage.Turn)
+				assert.Equal(t, "fedcba9876543210fedcba9876543210", tasks[0].PrivateData.TworkUsage.Session)
 				require.NotNil(t, tasks[0].PrivateData.BillingContext.ChannelRatio)
 				expectedRatio := 3.0
 				if tc.ratio == 0 {

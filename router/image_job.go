@@ -7,7 +7,7 @@ import (
 )
 
 func SetImageJobRouter(engine *gin.Engine) {
-	r := engine.Group("/v1/image-tasks", middleware.RouteTag("image_tasks"), middleware.ImageJobAuth())
+	r := engine.Group("/v1/image-tasks", middleware.RouteTag("image_tasks"), middleware.ImageJobAuth(), middleware.CaptureTworkUsage)
 	r.GET("/capabilities", controller.ImageJobCapabilities)
 	r.POST("/accounting/prepare", controller.PrepareImageJobAccounting)
 	r.POST("", controller.CreateImageJob)

@@ -37,17 +37,18 @@ var (
 var ImageJobSizes = []string{"1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "2:1", "1:2", "21:9", "9:21"}
 
 type ImageJobRequest struct {
-	ClientRequestID   string   `json:"client_request_id"`
-	ClientSessionID   string   `json:"client_session_id"`
-	Prompt            string   `json:"prompt"`
-	Size              string   `json:"size"`
-	Resolution        string   `json:"resolution"`
-	OutputFormat      string   `json:"output_format,omitempty"`
-	OutputCompression *int     `json:"output_compression,omitempty"`
-	Background        string   `json:"background"`
-	Quality           string   `json:"quality,omitempty"`
-	ImageURLs         []string `json:"image_urls,omitempty"`
-	MaskURL           string   `json:"mask_url,omitempty"`
+	TworkUsage        common.TworkUsage `json:"-"`
+	ClientRequestID   string            `json:"client_request_id"`
+	ClientSessionID   string            `json:"client_session_id"`
+	Prompt            string            `json:"prompt"`
+	Size              string            `json:"size"`
+	Resolution        string            `json:"resolution"`
+	OutputFormat      string            `json:"output_format,omitempty"`
+	OutputCompression *int              `json:"output_compression,omitempty"`
+	Background        string            `json:"background"`
+	Quality           string            `json:"quality,omitempty"`
+	ImageURLs         []string          `json:"image_urls,omitempty"`
+	MaskURL           string            `json:"mask_url,omitempty"`
 }
 
 func (r *ImageJobRequest) Normalize() error {
@@ -190,6 +191,7 @@ type ImageJob struct {
 	NextPollAt        int64  `gorm:"index:idx_image_job_work,priority:2"`
 	LeaseOwner        string `gorm:"size:64"`
 	LeaseUntil        int64  `gorm:"index"`
+	UsageMetadata     string `gorm:"type:varchar(256);not null;default:''"`
 }
 
 type ImageJobView struct {
@@ -403,6 +405,9 @@ func CreateImageJob(ctx context.Context, tokenID int, r ImageJobRequest) (*Image
 		}
 		now := time.Now().Unix()
 		job = ImageJob{ID: ImageJobID(tokenID, r.ClientRequestID), TokenID: tokenID, UserID: user.Id, ClientRequestID: r.ClientRequestID, ClientSessionID: r.ClientSessionID, RequestHash: hash, Status: "queued", ModelFamily: r.Family(), Resolution: r.Resolution, Size: r.Size, PriceCents: cents, ReservedQuota: quota, CreatedAt: now, UpdatedAt: now, ExpiresAt: now + 7*86400, AttemptedChannels: "[]"}
+		if r.TworkUsage != (common.TworkUsage{}) {
+			job.UsageMetadata = common.GetJsonString(r.TworkUsage)
+		}
 		if err := tx.Create(&job).Error; err != nil {
 			return err
 		}

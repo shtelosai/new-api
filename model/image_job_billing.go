@@ -116,6 +116,12 @@ func ProjectImageJobLogs(ctx context.Context) error {
 		if group == "" {
 			group = user.Group
 		}
+		var usage common.TworkUsage
+		if job.UsageMetadata != "" {
+			if err := common.UnmarshalJsonStr(job.UsageMetadata, &usage); err != nil {
+				return err
+			}
+		}
 		err := LOG_DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&ImageJobLogReceipt{ID: entry.ID, CreatedAt: time.Now().Unix()})
 			if inserted.Error != nil {
@@ -124,7 +130,7 @@ func ProjectImageJobLogs(ctx context.Context) error {
 			if inserted.RowsAffected == 0 {
 				return nil
 			}
-			return tx.Create(&Log{UserId: job.UserID, TokenId: job.TokenID, CreatedAt: job.SettledAt, Type: LogTypeConsume, Content: "异步图片生成", Username: user.Username, TokenName: token.Name, ModelName: "twork-image-" + job.ModelFamily + "-async", Quota: job.ChargedQuota, ChannelId: job.ChannelID, Group: group, RequestId: entry.ID, UseTime: int(job.SettledAt - job.CreatedAt)}).Error
+			return tx.Create(&Log{UserId: job.UserID, TokenId: job.TokenID, CreatedAt: job.SettledAt, Type: LogTypeConsume, Content: "异步图片生成", Username: user.Username, TokenName: token.Name, ModelName: "twork-image-" + job.ModelFamily + "-async", Quota: job.ChargedQuota, ChannelId: job.ChannelID, Group: group, RequestId: entry.ID, UseTime: int(job.SettledAt - job.CreatedAt), TworkTurn: usage.Turn, Other: common.MapToJsonStr(usage.AddToOther(nil))}).Error
 		})
 		if err != nil {
 			return err

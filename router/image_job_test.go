@@ -233,3 +233,66 @@ func TestImageJobListHonorsRequestedLimitAndCursor(t *testing.T) {
 		assert.Equal(t, 400, response.Code)
 	}
 }
+
+func TestImageJobHTTPPersistsUsageThroughSettlementAndReplay(t *testing.T) {
+	const turn = "0123456789abcdef0123456789abcdef"
+	const session = "fedcba9876543210fedcba9876543210"
+	for _, tc := range []struct{ name, turn, session, aux, wantTurn, wantSession, wantAux string }{
+		{"reply", turn, session, "title", turn, session, ""},
+		{"auxiliary", "", session, "avatar", "", session, "avatar"},
+		{"invalid", "invalid", "invalid", "invalid", "", "", ""},
+		{"legacy", "", "", "", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, token, _ := imageJobHTTPFixture(t, true)
+			body, err := common.Marshal(map[string]string{"client_request_id": "usage-test", "client_session_id": "original-session", "prompt": "cup"})
+			require.NoError(t, err)
+			request := httptest.NewRequest("POST", "/v1/image-tasks", bytes.NewReader(body))
+			request.Header.Set("Authorization", "Bearer sk-"+token.Key)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Twork-Turn", tc.turn)
+			request.Header.Set("X-Twork-Session", tc.session)
+			request.Header.Set("X-Twork-Aux", tc.aux)
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, request)
+			require.Equal(t, 202, w.Code, w.Body.String())
+			var view model.ImageJobView
+			require.NoError(t, common.Unmarshal(w.Body.Bytes(), &view))
+			// Replaying with different attribution must neither re-charge nor reassign the original task.
+			replay := httptest.NewRequest("POST", "/v1/image-tasks", bytes.NewReader(body))
+			replay.Header = request.Header.Clone()
+			replay.Header.Set("X-Twork-Turn", session)
+			replay.Header.Set("X-Twork-Session", turn)
+			w = httptest.NewRecorder()
+			engine.ServeHTTP(w, replay)
+			require.Equal(t, 202, w.Code, w.Body.String())
+			job, err := model.GetImageJob(context.Background(), token.Id, view.ID)
+			require.NoError(t, err)
+			assert.Equal(t, "original-session", job.ClientSessionID)
+			require.NoError(t, model.DB.Model(&model.ImageJob{}).Where("id = ?", job.ID).Updates(map[string]any{"status": "settling", "channel_id": 4, "result_hash": "digest", "actual_size": "1024x1024", "output_format": "png", "bytes": 123}).Error)
+			require.NoError(t, model.SettleImageJob(context.Background(), job.ID, true, ""))
+			require.NoError(t, model.ProjectImageJobLogs(context.Background()))
+			require.NoError(t, model.ProjectImageJobLogs(context.Background()))
+			var logs []model.Log
+			require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeConsume).Find(&logs).Error)
+			require.Len(t, logs, 1)
+			assert.Equal(t, 150000, logs[0].Quota)
+			assert.Equal(t, tc.wantTurn, logs[0].TworkTurn)
+			var other map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(logs[0].Other, &other))
+			if tc.wantSession != "" {
+				assert.Equal(t, tc.wantSession, other["twork_session"])
+			} else {
+				assert.NotContains(t, other, "twork_session")
+			}
+			if tc.wantAux != "" {
+				assert.Equal(t, tc.wantAux, other["twork_aux"])
+			} else {
+				assert.NotContains(t, other, "twork_aux")
+			}
+			require.NoError(t, model.DB.First(token, token.Id).Error)
+			assert.Zero(t, token.RemainQuota)
+			assert.Equal(t, 150000, token.UsedQuota)
+		})
+	}
+}

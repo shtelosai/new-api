@@ -213,15 +213,16 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
 	other["task_id"] = task.TaskID
 	other["reason"] = reason
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
-		UserId:    task.UserId,
-		LogType:   model.LogTypeRefund,
-		Content:   "",
-		ChannelId: task.ChannelId,
-		ModelName: taskModelName(task),
-		Quota:     quota,
-		TokenId:   task.PrivateData.TokenId,
-		Group:     task.Group,
-		Other:     other,
+		TworkUsage: task.PrivateData.TworkUsage,
+		UserId:     task.UserId,
+		LogType:    model.LogTypeRefund,
+		Content:    "",
+		ChannelId:  task.ChannelId,
+		ModelName:  taskModelName(task),
+		Quota:      quota,
+		TokenId:    task.PrivateData.TokenId,
+		Group:      task.Group,
+		Other:      other,
 	})
 }
 
@@ -283,16 +284,17 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		attachQuotaSaturationToOther(other, clamp)
 	}
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
-		UserId:    task.UserId,
-		LogType:   logType,
-		Content:   reason,
-		ChannelId: task.ChannelId,
-		ModelName: taskModelName(task),
-		Quota:     logQuota,
-		TokenId:   task.PrivateData.TokenId,
-		Group:     task.Group,
-		Other:     other,
-		NodeName:  task.PrivateData.NodeName,
+		TworkUsage: task.PrivateData.TworkUsage,
+		UserId:     task.UserId,
+		LogType:    logType,
+		Content:    reason,
+		ChannelId:  task.ChannelId,
+		ModelName:  taskModelName(task),
+		Quota:      logQuota,
+		TokenId:    task.PrivateData.TokenId,
+		Group:      task.Group,
+		Other:      other,
+		NodeName:   task.PrivateData.NodeName,
 	})
 }
 

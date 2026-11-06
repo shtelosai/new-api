@@ -29,6 +29,8 @@ func TestOMPFailedStreamKeepsPartialUsageAndSettlesOnlyOnce(t *testing.T) {
 	for key, value := range map[string]string{"Content-Type": "application/json", "X-Twork-Client-Version": "4.0.0", "X-Twork-Client-Capabilities": "model-routes-v4", "X-Twork-Agent-Runtime": "omp", "X-Twork-Omp-Version": "18.10.1", "X-Twork-Wire-Api": "responses", "X-Twork-Route-Mode": "model"} {
 		request.Header.Set(key, value)
 	}
+	request.Header.Set("X-Twork-Turn", "0123456789abcdef0123456789abcdef")
+	request.Header.Set("X-Twork-Session", "fedcba9876543210fedcba9876543210")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 	assert.Equal(t, 1, calls, "输出后的失败不能重试并重复结算")
@@ -37,6 +39,10 @@ func TestOMPFailedStreamKeepsPartialUsageAndSettlesOnlyOnce(t *testing.T) {
 	var logs []model.Log
 	require.NoError(t, model.LOG_DB.Where("model_name = ? AND type = ?", name, model.LogTypeConsume).Find(&logs).Error)
 	require.Len(t, logs, 1)
+	assert.Equal(t, "0123456789abcdef0123456789abcdef", logs[0].TworkTurn)
+	var other map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(logs[0].Other, &other))
+	assert.Equal(t, "fedcba9876543210fedcba9876543210", other["twork_session"])
 	assert.Equal(t, 100, logs[0].PromptTokens)
 	assert.Equal(t, 20, logs[0].CompletionTokens)
 	assert.Contains(t, logs[0].Content, "已输出用量")
