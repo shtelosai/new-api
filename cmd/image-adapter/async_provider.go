@@ -67,11 +67,15 @@ var asyncRatios = map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3":
 var kieRatios = map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "4:3": true, "3:4": true, "16:9": true, "9:16": true, "21:9": true, "27:16": true, "16:27": true, "9:8": true, "8:9": true}
 
 func validateAsyncRequest(r *AsyncRequest) *AsyncError {
-	if !asyncIDPattern.MatchString(r.JobID) || strings.TrimSpace(r.Prompt) == "" || utf8.RuneCountInString(r.Prompt) > 20000 || !utf8.ValidString(r.Prompt) {
-		return asyncError(400, "invalid_request_error", "任务 ID 或提示词无效", false)
-	}
 	if r.Model != "gpt-image-2.5-flare" && r.Model != "gpt-image-2.5-sunburst" {
 		return asyncError(400, "invalid_request_error", "异步接口仅支持 GPT Image 2.5", false)
+	}
+	return validateAsyncFields(r)
+}
+
+func validateAsyncFields(r *AsyncRequest) *AsyncError {
+	if !asyncIDPattern.MatchString(r.JobID) || strings.TrimSpace(r.Prompt) == "" || utf8.RuneCountInString(r.Prompt) > 20000 || !utf8.ValidString(r.Prompt) {
+		return asyncError(400, "invalid_request_error", "任务 ID 或提示词无效", false)
 	}
 	if r.Size == "" {
 		r.Size = "auto"

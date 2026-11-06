@@ -49,6 +49,7 @@ type TaskResult struct {
 	Pending bool
 	URLs    []string
 	Usage   json.RawMessage
+	Inline  bool // 图片已在适配器内存里，见 inlineResultProvider
 }
 
 type ImageResult struct {

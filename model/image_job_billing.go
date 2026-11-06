@@ -44,7 +44,7 @@ func SettleImageJob(ctx context.Context, id string, success bool, errorCode stri
 		if len(leaseOwner) > 0 && (job.LeaseOwner != leaseOwner[0] || job.LeaseUntil <= time.Now().Unix()) {
 			return ErrImageJobLease
 		}
-		_, price := (ImageJobRequest{Resolution: job.Resolution}).Price()
+		price := job.expectedQuota()
 		if job.ReservedQuota != price || price <= 0 || job.ChargedQuota != 0 {
 			return errors.New("图片任务金额状态不一致")
 		}
@@ -130,7 +130,7 @@ func ProjectImageJobLogs(ctx context.Context) error {
 			if inserted.RowsAffected == 0 {
 				return nil
 			}
-			return tx.Create(&Log{UserId: job.UserID, TokenId: job.TokenID, CreatedAt: job.SettledAt, Type: LogTypeConsume, Content: "异步图片生成", Username: user.Username, TokenName: token.Name, ModelName: "twork-image-" + job.ModelFamily + "-async", Quota: job.ChargedQuota, ChannelId: job.ChannelID, Group: group, RequestId: entry.ID, UseTime: int(job.SettledAt - job.CreatedAt), TworkTurn: usage.Turn, Other: common.MapToJsonStr(usage.AddToOther(nil))}).Error
+			return tx.Create(&Log{UserId: job.UserID, TokenId: job.TokenID, CreatedAt: job.SettledAt, Type: LogTypeConsume, Content: "异步图片生成", Username: user.Username, TokenName: token.Name, ModelName: job.logModelName(), Quota: job.ChargedQuota, ChannelId: job.ChannelID, Group: group, RequestId: entry.ID, UseTime: int(job.SettledAt - job.CreatedAt), TworkTurn: usage.Turn, Other: common.MapToJsonStr(usage.AddToOther(nil))}).Error
 		})
 		if err != nil {
 			return err

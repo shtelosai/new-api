@@ -110,6 +110,10 @@ func configuredServer(config Config) (*Server, error) {
 			}
 			transport.ResponseHeaderTimeout = 180 * time.Second
 			asyncProvider = &Sub2API{BaseURL: base, Key: key, Client: client, MaxPerHour: limit, MaxConcurrent: p.MaxConcurrent}
+		case "openai_images":
+			// 只开异步接口；上游同步耗时长，须用独立适配器进程部署，不和对话渠道同进程。
+			transport.ResponseHeaderTimeout = openAIImagesTimeout
+			asyncProvider = &OpenAIImages{BaseURL: base, Key: key, Client: client}
 		case "kie":
 			uploadBase := strings.TrimRight(p.UploadBaseURL, "/")
 			if uploadBase == "" {

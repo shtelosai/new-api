@@ -103,9 +103,11 @@ func (s *ImageJobService) advance(ctx context.Context, job *model.ImageJob) erro
 		if channel == nil {
 			return model.SettleImageJob(ctx, job.ID, false, "image_no_channel", job.LeaseOwner)
 		}
-		provider, family, err := channel.ImageJobProvider()
-		if err != nil {
-			return err
+		provider, family := model.ImageModelProvider, ""
+		if request.Model == "" {
+			if provider, family, err = channel.ImageJobProvider(); err != nil {
+				return err
+			}
 		}
 		attempted = append(attempted, channel.Id)
 		encoded, _ := common.Marshal(attempted)
@@ -153,7 +155,11 @@ func (s *ImageJobService) advance(ctx context.Context, job *model.ImageJob) erro
 }
 
 func (s *ImageJobService) submit(ctx context.Context, job *model.ImageJob, r model.ImageJobRequest, ch *model.Channel) error {
-	body := map[string]any{"job_id": job.ID, "model": "gpt-image-2.5-" + job.ModelFamily, "prompt": r.Prompt, "size": r.Size, "resolution": r.Resolution, "background": r.Background}
+	upstreamModel := "gpt-image-2.5-" + job.ModelFamily
+	if r.Model != "" {
+		upstreamModel = r.Model
+	}
+	body := map[string]any{"job_id": job.ID, "model": upstreamModel, "prompt": r.Prompt, "size": r.Size, "resolution": r.Resolution, "background": r.Background}
 	if r.OutputFormat != "" {
 		body["output_format"] = r.OutputFormat
 	}

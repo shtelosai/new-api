@@ -32,6 +32,7 @@ var (
 	ErrImageJobAuth     = errors.New("图片任务凭据已失效")
 	ErrImageJobLease    = errors.New("图片任务租约已失效")
 	imageJobIDPattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	imageModelIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,47}$`)
 )
 
 var ImageJobSizes = []string{"1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "2:1", "1:2", "21:9", "9:21"}
@@ -49,9 +50,14 @@ type ImageJobRequest struct {
 	Quality           string            `json:"quality,omitempty"`
 	ImageURLs         []string          `json:"image_urls,omitempty"`
 	MaskURL           string            `json:"mask_url,omitempty"`
+	// Model 只由画布入口设置；为空时走原有对话生图逻辑，且不改变请求哈希。
+	Model string `json:"model,omitempty"`
 }
 
 func (r *ImageJobRequest) Normalize() error {
+	if r.Model != "" && !imageModelIDPattern.MatchString(r.Model) {
+		return errors.New("图片模型标识无效")
+	}
 	if !imageJobIDPattern.MatchString(r.ClientRequestID) || !imageJobIDPattern.MatchString(r.ClientSessionID) {
 		return errors.New("请求和会话标识必须为 1 至 128 位字母、数字、下划线或连字符")
 	}
@@ -168,6 +174,7 @@ type ImageJob struct {
 	RequestHash       string `gorm:"size:64"`
 	Status            string `gorm:"size:20;index:idx_image_job_work,priority:1"`
 	ModelFamily       string `gorm:"size:16"`
+	ImageModel        string `gorm:"size:64;default:''"`
 	Resolution        string `gorm:"size:4"`
 	Size              string `gorm:"size:8"`
 	PriceCents        int
@@ -271,6 +278,9 @@ func imageJobChannels(db *gorm.DB, tokenID int, r ImageJobRequest) ([]*Channel, 
 	}
 	if !imageJobGroupAllowed(user.Group, group) || !ratio_setting.ContainsGroupRatio(group) || group == "auto" {
 		return nil, ErrTworkRouteDenied
+	}
+	if r.Model != "" {
+		return imageModelChannels(db, group, r)
 	}
 	models := []string{"twork-image-sunburst-async", "twork-image-flare-async"}
 	grants := db.Model(&TokenModelChannel{}).Select("channel_id").Where("token_id = ? AND model_id IN ?", tokenID, models)
@@ -382,6 +392,9 @@ func CreateImageJob(ctx context.Context, tokenID int, r ImageJobRequest) (*Image
 			return ErrTworkRouteDenied
 		}
 		cents, quota := r.Price()
+		if r.Model != "" {
+			cents, quota = channels[0].ImageModelPrice(r.Resolution)
+		}
 		if quota <= 0 {
 			return ErrImageJobQuota
 		}
@@ -404,7 +417,7 @@ func CreateImageJob(ctx context.Context, tokenID int, r ImageJobRequest) (*Image
 			return err
 		}
 		now := time.Now().Unix()
-		job = ImageJob{ID: ImageJobID(tokenID, r.ClientRequestID), TokenID: tokenID, UserID: user.Id, ClientRequestID: r.ClientRequestID, ClientSessionID: r.ClientSessionID, RequestHash: hash, Status: "queued", ModelFamily: r.Family(), Resolution: r.Resolution, Size: r.Size, PriceCents: cents, ReservedQuota: quota, CreatedAt: now, UpdatedAt: now, ExpiresAt: now + 7*86400, AttemptedChannels: "[]"}
+		job = ImageJob{ID: ImageJobID(tokenID, r.ClientRequestID), TokenID: tokenID, UserID: user.Id, ClientRequestID: r.ClientRequestID, ClientSessionID: r.ClientSessionID, RequestHash: hash, Status: "queued", ModelFamily: r.Family(), ImageModel: r.Model, Resolution: r.Resolution, Size: r.Size, PriceCents: cents, ReservedQuota: quota, CreatedAt: now, UpdatedAt: now, ExpiresAt: now + 7*86400, AttemptedChannels: "[]"}
 		if r.TworkUsage != (common.TworkUsage{}) {
 			job.UsageMetadata = common.GetJsonString(r.TworkUsage)
 		}
@@ -426,7 +439,8 @@ func GetImageJob(ctx context.Context, tokenID int, id string) (*ImageJob, error)
 	return &job, err
 }
 func ListImageJobs(ctx context.Context, tokenID int, sessionID, cursor string) ([]ImageJob, error) {
-	q := DB.WithContext(ctx).Where("token_id = ?", tokenID)
+	// 画布任务价格和模型不同，不能出现在对话客户端的列表里。
+	q := DB.WithContext(ctx).Where("token_id = ? AND image_model = ?", tokenID, "")
 	if sessionID != "" {
 		q = q.Where("client_session_id = ?", sessionID)
 	}

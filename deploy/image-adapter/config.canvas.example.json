@@ -1,0 +1,32 @@
+{
+  "listen": "127.0.0.1:8322",
+  "timeout_seconds": 270,
+  "poll_interval_ms": 2000,
+  "max_in_flight": 4,
+  "async": {
+    "enabled": true,
+    "data_dir": "/var/lib/twork-image-adapter-canvas",
+    "workers": 8,
+    "max_pending": 200,
+    "task_timeout_seconds": 900,
+    "retention_hours": 168
+  },
+  "providers": {
+    "supergpt": {
+      "adapter": "openai_images",
+      "base_url": "https://api.supergpt.dev/v1",
+      "api_key_env": "SUPERGPT_API_KEY",
+      "auth_token_env": "IMAGE_ADAPTER_SUPERGPT_TOKEN",
+      "async_enabled": true,
+      "models": [
+        "gemini-3-pro-image",
+        "gemini-nano-banana-2.1",
+        "gemini-3.1-flash-image",
+        "gpt-image-2.6-sunburst",
+        "gpt-image-2.6-flare",
+        "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare"
+      ]
+    }
+  }
+}

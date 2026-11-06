@@ -74,6 +74,14 @@ func (channel *Channel) TworkRuntime() (string, error) {
 			return "", err
 		}
 		return "image_async", nil
+	case "image_model":
+		if wirePresent {
+			return "", errors.New("画布图片渠道不能配置聊天协议")
+		}
+		if _, err := channel.ImageModelConfig(); err != nil {
+			return "", err
+		}
+		return "image_model", nil
 	case "omp":
 		if !dto.SupportsTworkOMPCompatibility(ompProfile, wire) {
 			return "", errors.New("OMP 渠道协议无效")

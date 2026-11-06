@@ -18,6 +18,23 @@ import (
 var imageJobPublicID = regexp.MustCompile(`^ij_[a-f0-9]{40}$`)
 var imageJobClientID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
+func ListImageModels(c *gin.Context) {
+	if imageJobAvailable(c) == nil {
+		return
+	}
+	if !service.CanvasImageTasksEnabled() {
+		imageJobError(c, 503, "image_async_unavailable", "画布生图尚未开放")
+		return
+	}
+	models, err := model.ListImageModels(c.Request.Context(), c.GetInt(middleware.ImageJobTokenKey))
+	if err != nil {
+		imageJobModelError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"models": models})
+}
+
 func ImageJobCapabilities(c *gin.Context) {
 	c.JSON(http.StatusOK, service.ImageJobCapabilities(c.Request.Context(), c.GetInt(middleware.ImageJobTokenKey)))
 }
@@ -29,7 +46,18 @@ func imageJobAvailable(c *gin.Context) *service.ImageJobService {
 	}
 	return s
 }
-func CreateImageJob(c *gin.Context) {
+func CreateImageJob(c *gin.Context) { createImageJob(c, false) }
+
+// 画布入口必须带 model；旧入口仍拒绝 model，对话客户端的行为不变。
+func CreateCanvasImageJob(c *gin.Context) {
+	if !service.CanvasImageTasksEnabled() {
+		imageJobError(c, 503, "image_async_unavailable", "画布生图尚未开放")
+		return
+	}
+	createImageJob(c, true)
+}
+
+func createImageJob(c *gin.Context, canvas bool) {
 	s := imageJobAvailable(c)
 	if s == nil {
 		return
@@ -40,6 +68,9 @@ func CreateImageJob(c *gin.Context) {
 		return
 	}
 	allowed := map[string]bool{"client_request_id": true, "client_session_id": true, "prompt": true, "size": true, "resolution": true, "output_format": true, "output_compression": true, "background": true, "quality": true, "image_urls": true, "mask_url": true}
+	if canvas {
+		allowed["model"] = true
+	}
 	root := gjson.ParseBytes(raw)
 	valid := gjson.ValidBytes(raw) && root.IsObject()
 	seen := map[string]bool{}
@@ -64,6 +95,10 @@ func CreateImageJob(c *gin.Context) {
 		imageJobError(c, 400, "image_invalid_request", err.Error())
 		return
 	}
+	if canvas && request.Model == "" {
+		imageJobError(c, 400, "image_invalid_request", "画布生图必须指定模型")
+		return
+	}
 	request.TworkUsage = common.GetTworkUsage(c)
 	job, _, err := s.Create(c.Request.Context(), c.GetInt(middleware.ImageJobTokenKey), request, c.GetHeader("X-Twork-Image-Replay-Only") == "true")
 	if err != nil {
@@ -71,6 +106,10 @@ func CreateImageJob(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
+	if canvas {
+		c.JSON(http.StatusAccepted, job.CanvasView())
+		return
+	}
 	c.JSON(http.StatusAccepted, job.View())
 }
 func GetImageJob(c *gin.Context) {
@@ -89,6 +128,27 @@ func GetImageJob(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.JSON(200, job.View())
 }
+func GetCanvasImageJob(c *gin.Context) {
+	if imageJobAvailable(c) == nil {
+		return
+	}
+	id := c.Param("id")
+	if !imageJobPublicID.MatchString(id) {
+		imageJobError(c, 400, "image_invalid_request", "图片任务标识无效")
+		return
+	}
+	job, err := model.GetImageJob(c.Request.Context(), c.GetInt(middleware.ImageJobTokenKey), id)
+	if err == nil && job.ImageModel == "" {
+		err = model.ErrImageJobNotFound
+	}
+	if err != nil {
+		imageJobModelError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, job.CanvasView())
+}
+
 func ListImageJobs(c *gin.Context) {
 	if imageJobAvailable(c) == nil {
 		return

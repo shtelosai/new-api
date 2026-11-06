@@ -35,6 +35,11 @@ type ImageJobService struct {
 var currentImageJobService atomic.Pointer[ImageJobService]
 var ErrImageJobCreationDisabled = errors.New("异步图片暂不接受新任务")
 
+// 画布模型单独开关：关闭时网关行为与发布前完全一致。
+func CanvasImageTasksEnabled() bool {
+	return common.GetEnvOrDefaultBool("TWORK_CANVAS_IMAGE_TASKS_ENABLED", false)
+}
+
 func ImageJobCreationEnabled() bool {
 	return common.GetEnvOrDefaultBool("TWORK_IMAGE_TASKS_ENABLED", false)
 }
@@ -139,6 +144,9 @@ func (s *ImageJobService) Create(ctx context.Context, tokenID int, r model.Image
 		return nil, false, err
 	}
 	_, quota := r.Price()
+	if r.Model != "" {
+		_, quota = channels[0].ImageModelPrice(r.Resolution)
+	}
 	if !token.UnlimitedQuota && token.RemainQuota < quota {
 		return nil, false, model.ErrImageJobQuota
 	}

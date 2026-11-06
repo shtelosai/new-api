@@ -296,3 +296,51 @@ func TestImageJobHTTPPersistsUsageThroughSettlementAndReplay(t *testing.T) {
 		})
 	}
 }
+
+func canvasImageChannel(t *testing.T) {
+	t.Helper()
+	setting := `{"twork_runtime":"image_model","twork_image_model":{"display_name":"GPT Image 2.6 Flare","prices_cents":{"1k":10},"sizes":["1:1"],"max_references":0}}`
+	ch := model.Channel{Id: 40, Status: common.ChannelStatusEnabled, Key: "k", BaseURL: common.GetPointer("http://127.0.0.1:1/supergpt"), Models: "twork-canvas-gpt-image-2.6-flare", Group: "default", Setting: &setting}
+	require.NoError(t, model.DB.Create(&ch).Error)
+	require.NoError(t, model.DB.Create(&model.Ability{Group: "default", Model: ch.Models, ChannelId: ch.Id, Enabled: true}).Error)
+}
+
+func TestCanvasImageRoutesStayClosedByDefault(t *testing.T) {
+	engine, a, _ := imageJobHTTPFixture(t, true)
+	canvasImageChannel(t)
+	request := map[string]any{"client_request_id": "c", "client_session_id": "s", "prompt": "cup", "model": "gpt-image-2.6-flare"}
+	assert.Equal(t, 503, imageJobHTTP(t, engine, a.Key, "POST", "/v1/canvas-image-tasks", request).Code)
+	assert.Equal(t, 503, imageJobHTTP(t, engine, a.Key, "GET", "/v1/canvas-image-tasks/models", nil).Code)
+}
+
+func TestLegacyImageRouteRejectsModelField(t *testing.T) {
+	engine, a, _ := imageJobHTTPFixture(t, true)
+	canvasImageChannel(t)
+	t.Setenv("TWORK_CANVAS_IMAGE_TASKS_ENABLED", "true")
+	request := map[string]any{"client_request_id": "legacy", "client_session_id": "s", "prompt": "cup", "model": "gpt-image-2.6-flare"}
+	assert.Equal(t, 400, imageJobHTTP(t, engine, a.Key, "POST", "/v1/image-tasks", request).Code)
+}
+
+func TestCanvasImageRouteRequiresModelAndReportsOwnPrice(t *testing.T) {
+	engine, a, _ := imageJobHTTPFixture(t, true)
+	canvasImageChannel(t)
+	t.Setenv("TWORK_CANVAS_IMAGE_TASKS_ENABLED", "true")
+	missing := map[string]any{"client_request_id": "m", "client_session_id": "s", "prompt": "cup"}
+	assert.Equal(t, 400, imageJobHTTP(t, engine, a.Key, "POST", "/v1/canvas-image-tasks", missing).Code)
+	request := map[string]any{"client_request_id": "c", "client_session_id": "s", "prompt": "cup", "model": "gpt-image-2.6-flare"}
+	w := imageJobHTTP(t, engine, a.Key, "POST", "/v1/canvas-image-tasks", request)
+	require.Equal(t, 202, w.Code, w.Body.String())
+	var job model.ImageCanvasJobView
+	require.NoError(t, common.Unmarshal(w.Body.Bytes(), &job))
+	assert.Equal(t, 10, job.PriceCents)
+	assert.Equal(t, "gpt-image-2.6-flare", job.Model)
+	assert.NotContains(t, w.Body.String(), "model_family")
+	w = imageJobHTTP(t, engine, a.Key, "GET", "/v1/image-tasks", nil)
+	require.Equal(t, 200, w.Code)
+	assert.NotContains(t, w.Body.String(), job.ID)
+	assert.Equal(t, 200, imageJobHTTP(t, engine, a.Key, "GET", "/v1/canvas-image-tasks/"+job.ID, nil).Code)
+	w = imageJobHTTP(t, engine, a.Key, "GET", "/v1/canvas-image-tasks/models", nil)
+	require.Equal(t, 200, w.Code)
+	assert.Contains(t, w.Body.String(), "GPT Image 2.6 Flare")
+	assert.NotContains(t, w.Body.String(), "supergpt")
+}

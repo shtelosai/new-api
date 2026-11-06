@@ -427,6 +427,11 @@ func (m *AsyncManager) advance(ctx context.Context, task *asyncTask) error {
 			task.ErrorCode = ""
 			return m.save(task)
 		}
+		if result.Inline {
+			task.Status = "downloading"
+			task.ErrorCode = ""
+			return m.save(task)
+		}
 		if len(result.URLs) != 1 || !validPublicImageURL(result.URLs[0]) {
 			return m.fail(task, "image_result_invalid", false, false)
 		}
@@ -451,6 +456,10 @@ func (m *AsyncManager) advance(ctx context.Context, task *asyncTask) error {
 			}
 			if len(picture) == 0 || len(picture) > 64<<20 {
 				return m.fail(task, "image_result_invalid", false, false)
+			}
+		} else if inline, ok := route.AsyncProvider.(inlineResultProvider); ok {
+			if picture, ok = inline.InlineResult(task.ProviderTaskID); !ok {
+				return m.fail(task, "openai_images_lost", false, false)
 			}
 		} else {
 			var urls []string
