@@ -355,3 +355,65 @@ func TestImageJobSub2APICandidatesAndFamilyPriority(t *testing.T) {
 		}
 	}
 }
+
+func TestImageJobPrefersGPTImage26ThenSunburstThenPriority(t *testing.T) {
+	token, _ := imageJobFixture(t)
+	require.NoError(t, DB.Exec("DELETE FROM channels").Error)
+	require.NoError(t, DB.Exec("DELETE FROM abilities").Error)
+	require.NoError(t, DB.Exec("DELETE FROM token_model_channels").Error)
+	for _, c := range []struct {
+		id       int
+		provider string
+		family   string
+		version  string
+		priority int64
+	}{
+		{204, "apimart", "sunburst", "", 400}, {274, "sub2api", "sunburst", "", 300}, {203, "kie", "sunburst", "", 200}, {202, "apimart", "flare", "", 300},
+		{291, "supergpt", "flare", "2.6", 200}, {290, "apimart", "flare", "2.6", 300}, {289, "supergpt", "sunburst", "2.6", 400}, {288, "apimart", "sunburst", "2.6", 500},
+	} {
+		name := "twork-image-" + c.family + "-async"
+		setting := `{"twork_runtime":"image_async","twork_image_provider":"` + c.provider + `","twork_image_family":"` + c.family + `"`
+		if c.version != "" {
+			setting += `,"twork_image_version":"` + c.version + `"`
+		}
+		channel := Channel{Id: c.id, Status: common.ChannelStatusEnabled, Models: name, Group: "default", Key: "test", BaseURL: common.GetPointer("http://127.0.0.1:8320/" + c.provider), Priority: common.GetPointer(c.priority), Setting: common.GetPointer(setting + "}")}
+		runtime, err := channel.TworkRuntime()
+		require.NoError(t, err)
+		require.Equal(t, "image_async", runtime)
+		require.NoError(t, DB.Create(&channel).Error)
+		require.NoError(t, DB.Create(&Ability{Group: "default", Model: name, ChannelId: c.id, Enabled: true}).Error)
+		require.NoError(t, DB.Create(&TokenModelChannel{TokenId: token.Id, ModelId: name, ChannelId: c.id}).Error)
+	}
+	ids := func(r ImageJobRequest) []int {
+		channels, err := ImageJobChannels(context.Background(), token.Id, r)
+		require.NoError(t, err)
+		out := []int{}
+		for _, ch := range channels {
+			out = append(out, ch.Id)
+		}
+		return out
+	}
+	// 2.6：APIMart Sunburst → supergpt Sunburst → APIMart Flare → supergpt Flare，之后才是原有 2.5 渠道。
+	assert.Equal(t, []int{288, 289, 290, 291, 204, 274, 203, 202}, ids(ImageJobRequest{Resolution: "1k", Size: "1:1"}))
+	// supergpt 不支持透明背景和 webp，直接跳过，不影响其余顺序。
+	assert.Equal(t, []int{288, 290, 204, 203, 202}, ids(ImageJobRequest{Resolution: "1k", Size: "1:1", Background: "transparent"}))
+	assert.NotContains(t, ids(ImageJobRequest{Resolution: "2k", Size: "16:9", OutputFormat: "webp"}), 289)
+	byID := map[int]string{}
+	var channels []Channel
+	require.NoError(t, DB.Find(&channels).Error)
+	for _, ch := range channels {
+		_, family, _ := ch.ImageJobProvider()
+		byID[ch.Id] = ch.ImageJobUpstreamModel(family)
+	}
+	assert.Equal(t, "gpt-image-2.6-sunburst", byID[288])
+	assert.Equal(t, "gpt-image-2.6-flare", byID[291])
+	assert.Equal(t, "gpt-image-2.5-sunburst", byID[204])
+}
+
+func TestImageJobVersionRejectsUnknownValues(t *testing.T) {
+	for _, setting := range []string{`{"twork_runtime":"image_async","twork_image_provider":"apimart","twork_image_family":"flare","twork_image_version":"2.7"}`, `{"twork_runtime":"image_async","twork_image_provider":"apimart","twork_image_family":"flare","twork_image_version":2.6}`} {
+		channel := Channel{Setting: common.GetPointer(setting)}
+		_, err := channel.TworkRuntime()
+		assert.Error(t, err, setting)
+	}
+}

@@ -505,3 +505,62 @@ func TestCanvasImageJobDownloadsResultAndChargesModelPrice(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, picture, b)
 }
+
+func TestChatImageJobUsesGPTImage26AndFallsBackFromAPIMartToSupergpt(t *testing.T) {
+	var models []string
+	var jobID string
+	picture := imageJobPNG(t, 1672, 941)
+	s, token, server := imageJobServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			var b map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &b))
+			jobID = b["job_id"].(string)
+			models = append(models, strings.Split(r.URL.Path, "/")[1]+":"+b["model"].(string))
+			if strings.HasPrefix(r.URL.Path, "/apimart26/") {
+				imageJobJSON(w, 503, map[string]any{"error": map[string]any{"code": "apimart_submit_rejected", "retryable": true}})
+				return
+			}
+			imageJobJSON(w, 202, map[string]any{"id": jobID, "status": "queued"})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/result") {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(picture)
+			return
+		}
+		imageJobJSON(w, 200, map[string]any{"id": jobID, "status": "succeeded", "provider_task_id": jobID, "image_count": 1, "actual_size": "1672x941", "output_format": "png"})
+	})
+	for _, c := range []struct {
+		id       int
+		route    string
+		provider string
+		priority int64
+	}{{30, "apimart26", "apimart", 500}, {31, "supergpt", "supergpt", 400}} {
+		name := "twork-image-sunburst-async"
+		ch := model.Channel{Id: c.id, Status: common.ChannelStatusEnabled, Key: "private-adapter-key", BaseURL: common.GetPointer(server.URL + "/" + c.route), Group: "default", Models: name, Priority: common.GetPointer(c.priority),
+			Setting: common.GetPointer(`{"twork_runtime":"image_async","twork_image_provider":"` + c.provider + `","twork_image_family":"sunburst","twork_image_version":"2.6"}`)}
+		require.NoError(t, model.DB.Create(&ch).Error)
+		require.NoError(t, model.DB.Create(&model.Ability{Group: "default", Model: name, ChannelId: ch.Id, Enabled: true}).Error)
+		require.NoError(t, model.DB.Create(&model.TokenModelChannel{TokenId: token.Id, ModelId: name, ChannelId: ch.Id}).Error)
+	}
+	job, _, err := s.Create(context.Background(), token.Id, model.ImageJobRequest{ClientRequestID: "chat-26", ClientSessionID: "session", Prompt: "杯子", Size: "16:9", Resolution: "1k"})
+	require.NoError(t, err)
+	for i := 0; i < 4; i++ {
+		require.NoError(t, s.RunOnce(context.Background()))
+	}
+	current, err := model.GetImageJob(context.Background(), token.Id, job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "succeeded", current.Status)
+	assert.Equal(t, 150000, current.ChargedQuota, "对话生图价格不变")
+	assert.Equal(t, "supergpt", current.ImageProvider)
+	assert.Equal(t, []string{"apimart26:gpt-image-2.6-sunburst", "supergpt:gpt-image-2.6-sunburst"}, models)
+}
+
+func TestSupergptResultChecksRatioAndRejectsDownscale(t *testing.T) {
+	_, _, err := ValidateImageJobResult(imageJobPNG(t, 1672, 941), model.ImageJobRequest{Size: "16:9", Resolution: "1k"}, "supergpt")
+	assert.NoError(t, err)
+	_, _, err = ValidateImageJobResult(imageJobPNG(t, 1024, 1024), model.ImageJobRequest{Size: "16:9", Resolution: "1k"}, "supergpt")
+	assert.Error(t, err)
+	_, _, err = ValidateImageJobResult(imageJobPNG(t, 1536, 864), model.ImageJobRequest{Size: "16:9", Resolution: "2k"}, "supergpt")
+	assert.Error(t, err)
+}

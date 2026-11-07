@@ -67,8 +67,11 @@ var asyncRatios = map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3":
 var kieRatios = map[string]bool{"auto": true, "1:1": true, "3:2": true, "2:3": true, "4:3": true, "3:4": true, "16:9": true, "9:16": true, "21:9": true, "27:16": true, "16:27": true, "9:8": true, "8:9": true}
 
 func validateAsyncRequest(r *AsyncRequest) *AsyncError {
-	if r.Model != "gpt-image-2.5-flare" && r.Model != "gpt-image-2.5-sunburst" {
-		return asyncError(400, "invalid_request_error", "异步接口仅支持 GPT Image 2.5", false)
+	// 具体路由能用哪些模型由配置里的 models 决定，这里只限定 GPT Image 2.5/2.6 两个家族。
+	switch r.Model {
+	case "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst":
+	default:
+		return asyncError(400, "invalid_request_error", "异步接口仅支持 GPT Image 2.5 与 2.6", false)
 	}
 	return validateAsyncFields(r)
 }

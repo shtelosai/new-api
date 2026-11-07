@@ -95,9 +95,40 @@ func TestOpenAIImagesRejectsUnsafeModelAndKeepsLegacyModelCheck(t *testing.T) {
 	r.Model = "../other"
 	assert.NotNil(t, (&OpenAIImages{}).ValidateTask(r))
 	legacy := openAIImagesRequest()
-	assert.NotNil(t, validateAsyncRequest(legacy), "旧入口仍只接受 GPT Image 2.5")
+	assert.Nil(t, validateAsyncRequest(legacy), "对话生图异步入口接受 GPT Image 2.6")
 	legacy.Model = "gpt-image-2.5-flare"
 	assert.Nil(t, validateAsyncRequest(legacy))
+	legacy.Model = "gemini-3-pro-image"
+	assert.NotNil(t, validateAsyncRequest(legacy), "异步入口只接受 GPT Image 2.5/2.6 家族")
+}
+
+func TestOpenAIImagesRetriesTransientUpstreamFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"b64_json": base64.StdEncoding.EncodeToString([]byte("png"))}}})
+	}))
+	t.Cleanup(server.Close)
+	p := &OpenAIImages{BaseURL: server.URL + "/v1", Key: "k", Client: server.Client()}
+	_, e := p.SubmitTask(context.Background(), openAIImagesRequest())
+	require.Nil(t, e)
+	require.Eventually(t, func() bool {
+		result, failure := p.PollTask(context.Background(), "job-1")
+		return failure == nil && !result.Pending
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestOpenAIImagesDoesNotRetryRejection(t *testing.T) {
+	p, calls := openAIImagesServer(t, nil, 0, 400)
+	_, e := p.SubmitTask(context.Background(), openAIImagesRequest())
+	require.Nil(t, e)
+	_, failure := waitOpenAIImages(t, p)
+	require.NotNil(t, failure)
+	assert.Equal(t, int32(1), calls.Load())
 }
 
 func TestOpenAIImagesCompletesThroughAsyncManager(t *testing.T) {

@@ -319,7 +319,8 @@ func ValidateImageJobResult(data []byte, r model.ImageJobRequest, provider strin
 			return "", "", errors.New("image_resolution_mismatch")
 		}
 	}
-	if provider == "kie" {
+	// Kie 与 supergpt 都不保证固定像素：核比例并拒绝明显低于档位的结果。
+	if provider == "kie" || provider == "supergpt" {
 		parts := strings.Split(r.Size, ":")
 		if len(parts) != 2 {
 			return "", "", errors.New("image_resolution_mismatch")

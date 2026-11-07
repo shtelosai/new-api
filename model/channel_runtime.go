@@ -73,6 +73,9 @@ func (channel *Channel) TworkRuntime() (string, error) {
 		if _, _, err := channel.ImageJobProvider(); err != nil {
 			return "", err
 		}
+		if _, err := channel.ImageJobVersion(); err != nil {
+			return "", err
+		}
 		return "image_async", nil
 	case "image_model":
 		if wirePresent {
@@ -328,10 +331,37 @@ func (channel *Channel) ImageJobProvider() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if (provider != "kie" && provider != "apimart" && provider != "sub2api") || (family != "flare" && family != "sunburst") {
+	if (provider != "kie" && provider != "apimart" && provider != "sub2api" && provider != "supergpt") || (family != "flare" && family != "sunburst") {
 		return "", "", errors.New("异步图片提供方或模型家族无效")
 	}
 	return provider, family, nil
+}
+
+// ImageJobVersion 返回对话生图渠道的 GPT Image 版本；未配置时沿用 2.5。
+func (channel *Channel) ImageJobVersion() (string, error) {
+	if channel.Setting == nil {
+		return "", errors.New("异步图片设置缺失")
+	}
+	version, present, err := common.CanonicalJSONStringField([]byte(*channel.Setting), "twork_image_version")
+	if err != nil {
+		return "", err
+	}
+	if !present {
+		return "2.5", nil
+	}
+	if version != "2.5" && version != "2.6" {
+		return "", errors.New("异步图片模型版本无效")
+	}
+	return version, nil
+}
+
+// ImageJobUpstreamModel 是提交给适配器的上游模型名。
+func (channel *Channel) ImageJobUpstreamModel(family string) string {
+	version, err := channel.ImageJobVersion()
+	if err != nil {
+		version = "2.5"
+	}
+	return "gpt-image-" + version + "-" + family
 }
 
 // OMP 只使用 CMS 明确标记为 omp 的渠道；legacy、codex、pi 渠道保留给旧客户端，不参与 OMP 选路。

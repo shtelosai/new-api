@@ -155,7 +155,7 @@ func (s *ImageJobService) advance(ctx context.Context, job *model.ImageJob) erro
 }
 
 func (s *ImageJobService) submit(ctx context.Context, job *model.ImageJob, r model.ImageJobRequest, ch *model.Channel) error {
-	upstreamModel := "gpt-image-2.5-" + job.ModelFamily
+	upstreamModel := ch.ImageJobUpstreamModel(job.ModelFamily)
 	if r.Model != "" {
 		upstreamModel = r.Model
 	}
@@ -246,7 +246,7 @@ func (s *ImageJobService) applyStatus(ctx context.Context, job *model.ImageJob, 
 			return errors.New("图片结果暂不可下载")
 		}
 		provider := job.ImageProvider
-		if provider != "kie" && provider != "apimart" && provider != "sub2api" && provider != model.ImageModelProvider {
+		if provider != "kie" && provider != "apimart" && provider != "sub2api" && provider != "supergpt" && provider != model.ImageModelProvider {
 			return errors.New("图片原始提供方记录无效")
 		}
 		actual, format, err := ValidateImageJobResult(picture, r, provider)

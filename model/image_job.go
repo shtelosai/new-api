@@ -320,11 +320,15 @@ func imageJobChannels(db *gorm.DB, tokenID int, r ImageJobRequest) ([]*Channel, 
 		if provider == "sub2api" && (r.Resolution != "1k" || len(r.ImageURLs) != 0 || r.MaskURL != "" || r.Quality != "" || r.OutputCompression != nil || !stringsIn([]string{"", "png"}, r.OutputFormat) || r.Background == "transparent" || !common.Sub2APIImageRatio(r.Size)) {
 			continue
 		}
+		// supergpt 走同步 Images 接口：不支持透明背景、压缩和非 PNG 输出，最高质量档也未开放。
+		if provider == "supergpt" && (r.Background == "transparent" || r.OutputCompression != nil || !stringsIn([]string{"", "png"}, r.OutputFormat) || !stringsIn([]string{"", "low", "medium", "high"}, r.Quality)) {
+			continue
+		}
 		if provider == "kie" && (r.MaskURL != "" || r.Quality != "" || !stringsIn([]string{"", "png", "jpeg"}, r.OutputFormat) || r.OutputCompression != nil || !ImageJobKieSize(r.Size)) {
 			continue
 		}
 		var disabled int64
-		if err := db.Model(&ChannelModelDisabled{}).Where("channel_id = ? AND model IN ?", ch.Id, []string{channelModel, "gpt-image-2.5-" + family}).Count(&disabled).Error; err != nil {
+		if err := db.Model(&ChannelModelDisabled{}).Where("channel_id = ? AND model IN ?", ch.Id, []string{channelModel, ch.ImageJobUpstreamModel(family)}).Count(&disabled).Error; err != nil {
 			return nil, err
 		}
 		if disabled > 0 {
@@ -332,7 +336,13 @@ func imageJobChannels(db *gorm.DB, tokenID int, r ImageJobRequest) ([]*Channel, 
 		}
 		valid = append(valid, ch)
 	}
+	// 先用 2.6，再按家族（Sunburst 优先）和渠道优先级排；2.5 渠道整体兜底。
 	sort.SliceStable(valid, func(i, j int) bool {
+		versionA, _ := valid[i].ImageJobVersion()
+		versionB, _ := valid[j].ImageJobVersion()
+		if versionA != versionB {
+			return versionA > versionB
+		}
 		_, familyA, _ := valid[i].ImageJobProvider()
 		_, familyB, _ := valid[j].ImageJobProvider()
 		if familyA != familyB {

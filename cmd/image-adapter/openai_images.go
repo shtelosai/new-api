@@ -109,6 +109,17 @@ func (p *OpenAIImages) generate(ctx context.Context, r *AsyncRequest) ([]byte, *
 		body, _ = common.Marshal(payload)
 	}
 	status, response, err := boundedRequest(ctx, p.Client, http.MethodPost, target, p.Key, contentType, body, 96<<20)
+	// 上游网关偶发 429/5xx 时没有出图，剩余时间够一次生成就原样重试，最多再试两次。
+	for retry := 0; retry < 2 && err == nil && openAIImagesRetryable(status); retry++ {
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 60*time.Second {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
+		status, response, err = boundedRequest(ctx, p.Client, http.MethodPost, target, p.Key, contentType, body, 96<<20)
+	}
 	if err != nil {
 		return nil, &AsyncError{Code: "openai_images_failed", Message: "上游请求失败"}
 	}
@@ -188,4 +199,8 @@ func (p *OpenAIImages) InlineResult(id string) ([]byte, bool) {
 		return nil, false
 	}
 	return job.picture, true
+}
+
+func openAIImagesRetryable(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout || status == http.StatusInternalServerError
 }
