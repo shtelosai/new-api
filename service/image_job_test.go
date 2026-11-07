@@ -465,3 +465,43 @@ func TestImageJobSub2APIFailoverToKieChargesOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestCanvasImageJobDownloadsResultAndChargesModelPrice(t *testing.T) {
+	var jobID string
+	picture := imageJobPNG(t, 1376, 768)
+	s, token, server := imageJobServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.True(t, strings.HasPrefix(r.URL.Path, "/supergpt/"))
+		if r.Method == "POST" {
+			var b map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &b))
+			jobID = b["job_id"].(string)
+			assert.Equal(t, "gemini-3.1-flash-image", b["model"])
+			imageJobJSON(w, 202, map[string]any{"id": jobID, "status": "queued"})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/result") {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(picture)
+			return
+		}
+		imageJobJSON(w, 200, map[string]any{"id": jobID, "status": "succeeded", "provider_task_id": jobID, "image_count": 1, "actual_size": "1376x768", "output_format": "png"})
+	})
+	name := "twork-canvas-gemini-3.1-flash-image"
+	ch := model.Channel{Id: 20, Status: common.ChannelStatusEnabled, Key: "private-adapter-key", BaseURL: common.GetPointer(server.URL + "/supergpt"), Group: "default", Models: name, Priority: common.GetPointer(int64(100)),
+		Setting: common.GetPointer(`{"twork_runtime":"image_model","twork_image_model":{"display_name":"Gemini 3.1 Flash Image","prices_cents":{"1k":10,"2k":20,"4k":40},"sizes":["1:1","16:9","9:16"],"edit":true,"mask":false,"max_references":4,"sort_order":1}}`)}
+	require.NoError(t, model.DB.Create(&ch).Error)
+	require.NoError(t, model.DB.Create(&model.Ability{Group: "default", Model: name, ChannelId: ch.Id, Enabled: true}).Error)
+	job, _, err := s.Create(context.Background(), token.Id, model.ImageJobRequest{ClientRequestID: "canvas", ClientSessionID: "session", Prompt: "杯子", Model: "gemini-3.1-flash-image", Size: "16:9", Resolution: "1k"})
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, s.RunOnce(context.Background()))
+	}
+	current, err := model.GetImageJob(context.Background(), token.Id, job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "succeeded", current.Status)
+	assert.Equal(t, "1376x768", current.ActualSize)
+	assert.Equal(t, 50000, current.ChargedQuota)
+	b, _, err := s.Result(context.Background(), token.Id, job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, picture, b)
+}

@@ -246,7 +246,7 @@ func (s *ImageJobService) applyStatus(ctx context.Context, job *model.ImageJob, 
 			return errors.New("图片结果暂不可下载")
 		}
 		provider := job.ImageProvider
-		if provider != "kie" && provider != "apimart" && provider != "sub2api" {
+		if provider != "kie" && provider != "apimart" && provider != "sub2api" && provider != model.ImageModelProvider {
 			return errors.New("图片原始提供方记录无效")
 		}
 		actual, format, err := ValidateImageJobResult(picture, r, provider)
