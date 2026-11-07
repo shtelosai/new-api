@@ -184,7 +184,8 @@ function buildAnthropicMessagesHeaders(input: AnthropicMessagesProbeInput): Reco
 export async function probeAnthropicMessages(
   input: AnthropicMessagesProbeInput,
 ): Promise<AnthropicMessagesProbeResult> {
-  const url = `${normalizeBaseUrl(input.baseUrl)}/messages`;
+  // 路径要和 Claude Code、网关转发保持一致，否则探的不是用户请求走的那条路。
+  const url = `${normalizeBaseUrl(input.baseUrl)}/v1/messages`;
   const body = JSON.stringify({
     model: input.model,
     max_tokens: 1,
@@ -199,15 +200,24 @@ export async function probeAnthropicMessages(
       signal: AbortSignal.timeout(Math.max(1000, input.timeoutMs)),
     });
 
-    await resp.text();
-    if (resp.status >= 200 && resp.status < 300) {
-      return { success: true, statusCode: resp.status };
+    const text = await resp.text();
+    if (resp.status < 200 || resp.status >= 300) {
+      return {
+        success: false,
+        statusCode: resp.status,
+        error: `anthropic messages probe returned status ${resp.status}`,
+      };
     }
-    return {
-      success: false,
-      statusCode: resp.status,
-      error: `anthropic messages probe returned status ${resp.status}`,
-    };
+    // 部分上游对未知路径也回 200 网页或空回复，只有真实的消息响应才算连通。
+    const message = JSON.parse(text);
+    if (message?.type !== 'message' || !(message.content?.length > 0 || message.usage?.output_tokens > 0)) {
+      return {
+        success: false,
+        statusCode: resp.status,
+        error: 'anthropic messages probe returned a non-message response',
+      };
+    }
+    return { success: true, statusCode: resp.status };
   } catch (error) {
     return {
       success: false,
@@ -216,7 +226,7 @@ export async function probeAnthropicMessages(
   }
 }
 
-async function runProbe(payload: ProbeRequest): Promise<ProbeResponse> {
+export async function runProbe(payload: ProbeRequest): Promise<ProbeResponse> {
   const startedAt = Date.now();
   const timeoutMs = Math.max(1000, payload.timeout_ms || defaultTimeoutMs);
   const abortController = new AbortController();
@@ -230,6 +240,8 @@ async function runProbe(payload: ProbeRequest): Promise<ProbeResponse> {
     const customHeaders = headersToEnv(payload.custom_headers);
     const env: Record<string, string | undefined> = {
       ...process.env,
+      // 默认重试约 3 分钟才放弃，会把上游的真实错误拖成探测超时。
+      CLAUDE_CODE_MAX_RETRIES: '0',
       ANTHROPIC_BASE_URL: baseUrl,
       ANTHROPIC_MODEL: model,
       ANTHROPIC_SMALL_FAST_MODEL: model,
@@ -301,11 +313,16 @@ async function runProbe(payload: ProbeRequest): Promise<ProbeResponse> {
       }
     }
 
+    // 空回复对用户就是失败，交给下面的回退检查复核。
+    if (!output.trim()) {
+      throw new Error('Claude Code returned an empty response');
+    }
+
     return {
       success: true,
       latency_ms: Date.now() - startedAt,
       sdk_session_id: sdkSessionId || undefined,
-      output: output.trim() || undefined,
+      output: output.trim(),
     };
   } catch (error) {
     const message = sdkErrorMessage(error);
