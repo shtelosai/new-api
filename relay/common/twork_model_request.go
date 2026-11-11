@@ -301,38 +301,60 @@ func tworkModelCompatibility(info *RelayInfo, version string) dto.TworkPiModelCo
 }
 
 // 模型级负载均衡不回放原渠道签名；工具配对和可见正文保持原序。
+// 历史思考整块丢弃，不能改写成 text：模型会当成自己对用户说过的话，长任务里把英文思考写进正文（2026-11-11 Twork 飞书 #76）。
 func portableOMPAnthropicRequest(body map[string]any) ([]byte, error) {
-	messages, _ := body["messages"].([]any)
+	messages, ok := body["messages"].([]any)
+	if !ok {
+		return common.Marshal(body)
+	}
+	kept := make([]any, 0, len(messages))
+	dropped := false
 	for _, value := range messages {
 		message, ok := value.(map[string]any)
 		if !ok {
+			kept, dropped = append(kept, value), false
 			continue
 		}
-		content, ok := message["content"].([]any)
-		if !ok {
-			continue
-		}
-		filtered := make([]any, 0, len(content))
-		for _, value := range content {
-			part, ok := value.(map[string]any)
-			if !ok {
-				filtered = append(filtered, value)
-				continue
-			}
-			switch part["type"] {
-			case "redacted_thinking":
-				continue
-			case "thinking":
-				if text, ok := part["thinking"].(string); ok && text != "" {
-					filtered = append(filtered, map[string]any{"type": "text", "text": text})
+		if content, ok := message["content"].([]any); ok {
+			filtered := make([]any, 0, len(content))
+			for _, value := range content {
+				if part, ok := value.(map[string]any); ok && (part["type"] == "thinking" || part["type"] == "redacted_thinking") {
+					continue
 				}
-			default:
 				filtered = append(filtered, value)
 			}
+			// 只剩思考的消息（如思考中途截断）整条去掉，上游拒绝空内容。
+			if len(filtered) == 0 && len(content) > 0 {
+				dropped = true
+				continue
+			}
+			message["content"] = filtered
 		}
-		message["content"] = filtered
+		// 去掉消息后前后同角色的两条直接合并，不依赖中转渠道自行合并。
+		if dropped && len(kept) > 0 {
+			if previous, ok := kept[len(kept)-1].(map[string]any); ok && previous["role"] == message["role"] {
+				previous["content"] = append(anthropicContentBlocks(previous["content"]), anthropicContentBlocks(message["content"])...)
+				dropped = false
+				continue
+			}
+		}
+		kept, dropped = append(kept, message), false
 	}
+	body["messages"] = kept
 	return common.Marshal(body)
+}
+
+func anthropicContentBlocks(content any) []any {
+	switch value := content.(type) {
+	case []any:
+		return value
+	case string:
+		return []any{map[string]any{"type": "text", "text": value}}
+	case nil:
+		return nil
+	default:
+		return []any{value}
+	}
 }
 
 // 思考参数由锁定 OMP 的原生序列化器生成，网关只应用对应档位的数据快照。

@@ -4,7 +4,8 @@
 
 - 模型级 Responses 请求重建历史时，`reasoning` 项的明文摘要（`summary_text`）只对 Pi 1.0 / 1.1 回退为 `role=assistant` 文本；OMP 版本（`X-Twork-Omp-Version`）整项丢弃，和密文、恢复状态一样不回放。
 - 原因：摘要改写成助手发言后，模型把它当成自己对用户说过的话。GPT 6.1 Terra 等模型在长任务里照着历史，在调工具前把「**英文小标题** + I need to…」写进正文，用户看到中文回复中间夹英文思考（Twork 飞书 #44，4.2.6）。
-- 固定渠道、Chat Completions 适配不受影响；OMP 的 `/v1/messages`（`portableOMPAnthropicRequest`）仍把 thinking 改成 text，属同类做法，但 Claude 工具循环对 thinking 块有硬性要求，不能照搬整项丢弃，另行评估。
+- 固定渠道、Chat Completions 适配不受影响。
+- OMP 的 `/v1/messages`（`portableOMPAnthropicRequest`）同理：历史 `thinking` / `redacted_thinking` 整块丢弃，不再改成 `text`（2026-11-11 Twork 飞书 #76：Opus 5.5 中文对话里成段写英文过程话，结论也变英文）。只剩思考的消息整条去掉，前后同角色消息由网关合并。原先担心「Claude 工具循环要求最后一条助手消息以 thinking 开头」：旧做法改成 text 同样不满足且线上一直正常；修复前用本机代理把历史思考删掉实测 Opus 5.5 两轮 22 次请求（最后一条助手消息以 `tool_use` 开头）全部 200。
 - 版本放开时不得再把 OMP 加回这条回退分支；`AGENTS.md`「Twork 运行方式隔离」同步记录。
 
 ## 回归验证
@@ -12,6 +13,7 @@
 - `relay/common/twork_reasoning_summary_test.go`：OMP 版本（含与 Pi 1.0 同号、同时带 Pi 头）多段摘要、多个推理项均不出现在出站体，公开消息（含 `phase`）与工具配对保留。
 - `relay/twork_reasoning_summary_outbound_test.go`：出站矩阵 `model_omp` 一组，在真实 HTTP 客户端边界确认摘要不出站；Pi 1.0 / 1.1、固定渠道、旧版行为不变。
 - 旧代码下上述两条均失败。
+- `relay/common/twork_omp_request_test.go`：OMP Claude 历史思考丢弃、只剩思考的消息去掉并合并相邻同角色、工具配对与顺序、非思考形状原样透传；`relay/twork_model_request_test.go` 走完整 Anthropic 适配链路确认思考不出站。旧代码下两条失败。
 
 ```sh
 go test ./relay/common/ ./relay/ ./dto/ ./middleware/ -count=1
